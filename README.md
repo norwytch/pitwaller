@@ -1,6 +1,6 @@
 # pitwaller
 
-**Embedding-space out-of-distribution detection, confidence tiering, and automated QA for CNN image classifiers.**
+**Embedding-space out-of-distribution detection, confidence tiering, and automated QA for binary classifiers.**
 
 Given a binary classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case, and distribution as detailed in Limitations. 
 
