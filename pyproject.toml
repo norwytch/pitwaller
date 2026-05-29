@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pitwaller"
+version = "0.1.0"
+description = "Embedding-space OOD confidence tiering and automated model QA for CNN classifiers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Your Name" }]
+keywords = ["out-of-distribution", "confidence", "model-monitoring", "faiss", "efficientnet"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.23",
+    "scikit-learn>=1.1",
+    "faiss-cpu>=1.7",
+]
+
+[project.optional-dependencies]
+# Real EfficientNet-B4 feature extraction.
+torch = ["torch>=2.0", "timm>=0.9"]
+# CLIP vision-encoder features (broad semantic representation for novel-content
+# detection). open_clip_torch pulls in torch.
+clip = ["open_clip_torch>=2.20", "torch>=2.0"]
+# Class-imbalance remediation (ADASYN). The policy *recommends* this; install
+# it only if you wire the action up to an actual rebalancing job.
+rebalance = ["imbalanced-learn>=0.11"]
+dev = ["pytest>=7", "ruff>=0.1"]
+
+[project.urls]
+Homepage = "https://github.com/yourname/pitwaller"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
