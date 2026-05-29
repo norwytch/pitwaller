@@ -207,7 +207,7 @@ src/pitwaller/
   decisions.py    remediation escalation policy engine
   pipeline.py     end-to-end orchestration
   demo.py         runnable synthetic walkthrough
-tests/            77 tests across every component
+tests/            80 tests across every component
 examples/         quickstart.py, calibration_analysis.py
 ```
 
@@ -254,7 +254,7 @@ No monitoring system is free, and this one makes specific bets. The main caveats
 pip install -e .              # core: numpy, scikit-learn, faiss-cpu
 pip install -e '.[torch]'     # + real EfficientNet-B4 features
 pip install -e '.[dev]'       # + pytest, ruff
-pytest                        # 77 tests
+pytest                        # 80 tests
 ```
 
 ## License

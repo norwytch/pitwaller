@@ -187,6 +187,7 @@ class PolicyThresholds:
     accuracy_drop_critical: float = 0.10
     tiered_accuracy_gap: float = 0.05    # HIGH should beat LOW by at least this
     class_recall_floor: float = 0.60     # below this a class is "collapsing"
+    class_recall_min_support: int = 20   # min labelled samples before recall is trusted
     class_imbalance_min_classes: int = 1
     size_pressure: bool = False          # latency/footprint flag from serving
     escalate_after_attempts: int = 2     # repeated cheap fix -> promote
@@ -299,7 +300,16 @@ def recommend(
         )
 
     # --- Rule 3: one or more classes collapsing -> targeted rebalance ---------
-    collapsing = [c for c, r in diag.per_class_recall.items() if r < t.class_recall_floor]
+    # Only trust a low recall once the class has enough labelled support, so a
+    # single mislabelled sample of a rare class can't fire a retrain. When no
+    # support count is recorded (caller built Diagnostics by hand), don't
+    # second-guess it.
+    collapsing = [
+        c
+        for c, r in diag.per_class_recall.items()
+        if r < t.class_recall_floor
+        and diag.per_class_support.get(c, t.class_recall_min_support) >= t.class_recall_min_support
+    ]
     if len(collapsing) >= t.class_imbalance_min_classes and collapsing:
         recs.append(
             Recommendation(
@@ -371,7 +381,8 @@ def recommend(
         tries = attempts.get(cheapest.action.value, 0)
         if tries >= t.escalate_after_attempts:
             promoted = _escalate(cheapest.action)
-            if promoted is not cheapest.action:
+            already = {r.action for r in recs}
+            if promoted is not cheapest.action and promoted not in already:
                 recs.append(
                     Recommendation(
                         promoted,

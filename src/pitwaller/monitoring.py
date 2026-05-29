@@ -47,6 +47,7 @@ class Diagnostics:
     accuracy_overall: float | None
     accuracy_by_tier: dict[str, float | None]
     per_class_recall: dict[int, float] = field(default_factory=dict)
+    per_class_support: dict[int, int] = field(default_factory=dict)  # labelled count per class
     labelled_fraction: float = 0.0
 
     # Optional baselines captured at validation/deploy time.
@@ -109,10 +110,12 @@ def aggregate(
             if r.pred_label == r.true_label:
                 hit[r.true_label] += 1
         per_class_recall = {c: hit[c] / total[c] for c in total}
+        per_class_support = dict(total)
     else:
         accuracy_overall = None
         acc_by_tier = {t.value: None for t in Tier}
         per_class_recall = {}
+        per_class_support = {}
 
     return Diagnostics(
         n=n,
@@ -123,6 +126,7 @@ def aggregate(
         accuracy_overall=accuracy_overall,
         accuracy_by_tier=acc_by_tier,
         per_class_recall=per_class_recall,
+        per_class_support=per_class_support,
         labelled_fraction=labelled_fraction,
         baseline_high_rate=baseline_high_rate,
         baseline_accuracy=baseline_accuracy,

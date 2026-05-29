@@ -50,6 +50,43 @@ def test_adasyn_on_class_collapse():
     assert Action.ADASYN_REBALANCE in top_actions(recommend(d))
 
 
+def test_low_recall_class_with_thin_support_does_not_fire_adasyn():
+    # One class shows 0% recall but only 3 labelled samples -> too thin to trust;
+    # a single mislabel shouldn't trigger a rebalance + retrain.
+    recall = {i: 0.9 for i in range(8)}
+    recall[3] = 0.0
+    support = {i: 200 for i in range(8)}
+    support[3] = 3
+    d = diag(per_class_recall=recall, per_class_support=support)
+    assert Action.ADASYN_REBALANCE not in top_actions(recommend(d))
+
+
+def test_low_recall_class_with_ample_support_fires_adasyn():
+    recall = {i: 0.9 for i in range(8)}
+    recall[3] = 0.4
+    support = {i: 200 for i in range(8)}
+    d = diag(per_class_recall=recall, per_class_support=support)
+    assert Action.ADASYN_REBALANCE in top_actions(recommend(d))
+
+
+def test_escalation_does_not_duplicate_an_already_recommended_action():
+    # Tiers drifted (threshold rule) AND covariate shift (BN rule already fires);
+    # escalating the threshold fix up to BN must not emit a second BN rec.
+    d = diag(
+        tier_distribution={"HIGH": 0.65, "MED": 0.25, "LOW": 0.10},
+        accuracy_overall=0.94,
+        ood_rate=0.18,
+        if_outlier_rate=0.15,
+    )
+    recs = recommend(
+        d,
+        PolicyThresholds(),
+        recent_attempts={Action.THRESHOLD_ADJUSTMENT.value: 3},
+    )
+    actions = top_actions(recs)
+    assert actions.count(Action.BN_RECALIBRATION) == 1
+
+
 def test_partial_retrain_on_moderate_drop():
     d = diag(accuracy_overall=0.90)  # 5% drop -> moderate
     assert Action.PARTIAL_BACKBONE_RETRAIN in top_actions(recommend(d))
