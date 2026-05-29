@@ -2,9 +2,9 @@
 
 **Embedding-space out-of-distribution detection, confidence tiering, and automated QA for CNN image classifiers.**
 
-Production image classifiers don't fail loudly — they fail *silently* on inputs that drift away from what they were trained on, while still returning a confident-looking softmax. `pitwaller` catches that by scoring every prediction against the model's *own* feature space, sorting predictions into actionable confidence tiers, and — when quality degrades — recommending the cheapest corrective action that will actually fix the problem.
+Given a binary classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case, and distribution as detailed in Limitations. 
 
-It runs end-to-end on synthetic data out of the box (no weights, no dataset required) so you can see the whole system work in seconds:
+Our demo runs end-to-end on synthetic data out of the box. To test:
 
 ```bash
 pip install -e .
@@ -51,12 +51,10 @@ flowchart LR
 
 ### 1. OOD detection in the model's own feature space
 
-Rather than bolting on a separate OOD detector, the system uses the classifier's penultimate-layer embeddings — the 1792-dim global-pooled features of EfficientNet-B4. The training set's embeddings *define* the in-distribution manifold. Two independent detectors run over them:
+We use the classifier's penultimate-layer embeddings, in this case the 1792-dim global-pooled features of EfficientNet-B4. The training set's embeddings define the in-distribution manifold. Two independent detectors run over them:
 
 - **kNN distance** via a **FAISS HNSW** index. For any input, the mean distance to its *k* nearest training neighbours is a non-parametric local-density score. Calibrated against the training set's own distance distribution, it yields two cut-points: the **50th percentile** (edge of the dense core) and the **90th percentile** (beyond which a point is sparser than 90% of training data).
 - **Isolation Forest**, a global structural anomaly detector that catches off-manifold points kNN distance alone can miss.
-
-They're kept independent on purpose — they fail in different ways, and their *agreement* is the signal.
 
 ### 2. Confidence tiering
 
@@ -82,11 +80,11 @@ Monitoring aggregates production predictions into **diagnostics** (OOD rate, tie
 | `PRUNING` | latency/size pressure while accuracy is healthy |
 | `ARCHITECTURE_REBUILD` | OOD rate stays high *after* retraining — the capacity ceiling |
 
-The engine diagnoses the *kind* of failure, not just its magnitude, and **escalates** up the ladder when a cheap fix has been applied repeatedly without resolving the issue (so it doesn't loop forever recalibrating thresholds against a problem that needs a retrain).
+We diagnose the type and magnitude of failure, and escalate the recommendation when a cheap fix has been applied repeatedly without resolving the issue.
 
 ### 4. Pit stop vs. engine rebuild
 
-Every action carries an **effort tier** describing how time- and tech-intensive the fix actually is — the dimensions that matter operationally being wall-clock, whether you need labels, GPU intensity, and crucially *whether the model can keep serving while you do it*:
+Each type of remedial action is categorized in an effort tier according to how time-, labor-, and cost-intensive the fix is expected to be. We also specify whether the model can remain live in production during the remediation.
 
 | Effort tier | Actions | What it costs | Model live? |
 |-------------|---------|---------------|-------------|
@@ -109,37 +107,6 @@ for tier, group in group_by_effort(recs).items():
 ```
 
 The bucketing never contradicts the cost ladder (there's a test for that): a heavier tier always implies a strictly costlier action.
-
-### 5. Rigorous threshold selection (`calibration.py`)
-
-The percentile cut-points (p50/p90) and an equal-cost operating point are fine defaults, but `calibration.py` provides statistically grounded alternatives for the thresholds employers will scrutinise most:
-
-- **Conformal thresholds** — cut a nonconformity score (the kNN OOD distance) at the split-conformal quantile so the flag carries a finite-sample, distribution-free bound on the inlier rejection rate, replacing an eyeballed p90. The **weighted** variant (Tibshirani et al., 2019) preserves that bound under covariate shift using density-ratio weights — which the OOD model already estimates, so the machinery that *detects* shift also *corrects* the threshold for it.
-- **Risk-coverage / AURC** — evaluate the whole confidence ordering as a selective predictor (Geifman & El-Yaniv) instead of scoring one operating point. `aurc`, `excess_aurc`, `selective_risk_at_coverage`, `coverage_at_risk`.
-- **Cost- and constraint-based operating points** — `cost_optimal_threshold` (minimise expected cost under possibly-asymmetric error costs and a settable prevalence), `constraint_threshold` (maximise coverage subject to an FPR/precision constraint). `youden_j_threshold` is included as the equal-cost special case, for comparison.
-- **Bootstrap CIs** that gate the auto-QA loop — `conformal_threshold_ci` yields a CI on the deployed cut; the policy then fires `THRESHOLD_ADJUSTMENT` only when the deployed threshold is *implausible* under recent data (a `ThresholdDriftSignal`), so it adjusts on real drift and ignores sampling noise.
-
-```bash
-python examples/calibration_analysis.py
-```
-
-```
-1) Conformal outlier cut
-   p90 (heuristic)        = 0.0332
-   conformal q (alpha=0.05) = 0.0350
-   guaranteed FPR <= 5%; realised on inliers = 4.0%
-3) Operating points on the OOD score
-   Youden's J            : thr=0.0375
-   cost (miss 5x worse)  : thr=0.0343      # asymmetric cost flags more
-   constraint FPR<=2%    : thr=0.0361 (fpr=2.0%, tpr=51%)
-4) CI-gated threshold adjustment
-   re-estimated cut = 0.0350  CI=[0.0343, 0.0359]
-   deployed cut     = 0.0335  -> drift significant: True
-```
-
-### 6. BatchNorm recalibration, validated (`bn_recal.py`)
-
-`BN_RECALIBRATION` is wrapped in the rigor it needs rather than fired blind: **justify** it by measuring per-layer input shift (closed-form 2-Wasserstein between the stored and fresh per-channel BN Gaussians, plus symmetric KL); **recalibrate** by re-estimating running stats over fresh *unlabelled* inputs (AdaBN — forward passes only, no gradients, no labels); then **validate** with McNemar's paired test on before/after correctness, promoting the change only if it's a real, significant net improvement rather than churn. The statistics are pure NumPy and tested; the two functions that touch a live model (`collect_bn_stats`, `recalibrate_bn`) are marked WIRE-IN and lazily import torch.
 
 ---
 
@@ -192,6 +159,66 @@ Rule of thumb: gating one model's competence → its own features are fine; cata
 
 ---
 
+## Example: wrapping a classifier
+
+Say you have a trained image classifier and want to gate its predictions by confidence. Fit the OOD reference once on the training set, then score production inputs and route by tier.
+
+```python
+from pitwaller import ConfidencePipeline, Tier
+from pitwaller.embeddings import EffNetB4Embedder
+
+# Fit the OOD reference on the same data the classifier was trained on.
+# (EffNetB4Embedder needs `pitwaller[torch]`; swap in any Embedder you like.)
+pipe = ConfidencePipeline(EffNetB4Embedder(device="cuda"), k=10, contamination=0.05)
+pipe.fit(train_images)
+
+# Score production inputs; trust HIGH, send the rest for review / a fallback.
+for inp, scored in zip(prod_inputs, pipe.score(prod_inputs)):
+    pred = classifier(inp)
+    if scored.tier is Tier.HIGH:
+        accept(pred)
+    else:
+        route_to_review(inp, pred)   # MED / LOW
+```
+
+When labels arrive (often late), aggregate a window of predictions into diagnostics and ask the policy what to do:
+
+```python
+from pitwaller import PredictionRecord, aggregate, recommend
+
+records = [PredictionRecord(ood=s.ood, tier=s.tier, pred_label=p, true_label=y)
+           for s, p, y in zip(scored_window, preds, labels)]
+diag = aggregate(records, baseline_high_rate=0.85, baseline_accuracy=0.95)
+
+for rec in recommend(diag):
+    print(rec.severity.value, rec.action.value, "-", rec.rationale)
+```
+
+If the policy recommends `BN_RECALIBRATION` (covariate shift — inputs drifted, accuracy held), `bn_recal.py` gives you the justify → recalibrate → validate path so you don't fire it blind:
+
+```python
+from pitwaller.bn_recal import (
+    collect_bn_stats, feature_stats, bn_shift_report, should_recalibrate,
+    recalibrate_bn, validate_recalibration,
+)
+
+# 1. Justify: did the BatchNorm input stats actually move?
+report = bn_shift_report(
+    collect_bn_stats(model),
+    {name: feature_stats(acts) for name, acts in recent_activations.items()},
+)
+if should_recalibrate(report, w2_threshold):
+    # 2. Recalibrate on fresh, unlabelled inputs (forward passes only).
+    recalibrate_bn(model, fresh_unlabelled_batches)
+    # 3. Validate: promote only on a significant net improvement (McNemar).
+    if validate_recalibration(correct_before, correct_after).significant_improvement():
+        promote(model)
+```
+
+For a runnable version on synthetic data (no weights or dataset required), see [`examples/quickstart.py`](examples/quickstart.py) and `python -m pitwaller.demo`.
+
+---
+
 ## Project layout
 
 ```
@@ -211,16 +238,9 @@ tests/            80 tests across every component
 examples/         quickstart.py, calibration_analysis.py
 ```
 
-## Design notes
-
-- **Embedder is injected behind a `Protocol`.** The core never imports `torch`; the FAISS/OOD/tiering logic is tested entirely on synthetic features. PyTorch is an optional extra.
-- **FAISS HNSW is the right index here**: the reference set is the whole training embedding set (potentially millions of vectors), queries are online, and approximate neighbours are sufficient to estimate density. A pure-numpy fallback keeps the package runnable anywhere.
-- **The two OOD detectors are independent by design.** Folding their agreement into the tier is what makes MED a meaningful "needs a human / needs a second look" bucket rather than noise.
-- **The policy engine is a transparent rule set, not a black box** — every recommendation carries the signals that triggered it, so an operator can audit *why*.
-
 ## Limitations & when to use this
 
-No monitoring system is free, and this one makes specific bets. The main caveats:
+This system was developed for a highly specific use case, and depends on some highly specific assumptions: 
 
 - **OOD distance is a proxy for error, not error itself.** It flags inputs that are *novel*, not inputs that are *wrong*; confident in-distribution mistakes (overlapping classes, label noise, hard examples) pass through as HIGH.
 - **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls — only the label-dependent accuracy monitor will notice.
@@ -245,8 +265,6 @@ No monitoring system is free, and this one makes specific bets. The main caveats
 - **The model is short-lived** (prototypes, rapidly-replaced models) — the maintenance overhead never amortises.
 - **Serving is latency- or memory-constrained** (edge) — a parametric score (Mahalanobis, energy) beats carrying the whole training-embedding index and running kNN per inference.
 - **You have no labels and no capacity to act** — the auto-QA loop is then decorative.
-
-**Rule of thumb:** reach for this when silent errors are costly, the model is long-lived, and covariate shift is a real and recurring risk — and start with a simpler confidence baseline (max-softmax or temperature scaling) first, graduating to this only once you've shown the simple thing is insufficient.
 
 ## Install
 
