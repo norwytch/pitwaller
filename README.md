@@ -1,8 +1,8 @@
 # pitwaller
 
-**Embedding-space out-of-distribution detection, confidence tiering, and automated QA for binary classifiers.**
+**Embedding-space out-of-distribution detection, confidence tiering, and automated QA for image classifiers.**
 
-Given a binary classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case and distribution as detailed in Limitations. 
+Given an image classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case and distribution as detailed in [Limitations](#limitations--when-to-use-this). 
 
 Our demo runs end-to-end on synthetic data out of the box. To test:
 
@@ -37,9 +37,9 @@ Label-calibrated tiers -- cuts placed at target error rates (ECE=0.03):
   route LOW        n= 53 (26%)  -- send to review / fallback
 ```
 
-Note: the monotonic relationship between accuracy and OOD-distance based confidence tiering is a requirement for this framework. For more notes on this, see Limitations. 
+Note: the monotonic relationship between accuracy and OOD-distance based confidence tiering is a requirement for this framework. For more notes on this, see [Limitations](#limitations--when-to-use-this). 
 
-The final block is the optional **label-calibrated tiering** ([§5](#5-label-calibrated-tiers-tier_calibrationpy)): given a labelled set, the cuts are placed at *tolerated error rates* instead of distance percentiles, so the over-generous 88 HIGH collapses to the 13 that actually clear a 5% error bar.
+The final block is the optional **label-calibrated tiering** ([details below](#optional-label-calibrated-tiers-tier_calibrationpy)): given a labelled set, the cuts are placed at *tolerated error rates* instead of distance percentiles, so the over-generous 88 HIGH collapses to the 13 that actually clear a 5% error bar.
 
 ---
 
@@ -74,7 +74,7 @@ We use the classifier's penultimate-layer embeddings, in this case the 1792-dim 
 
 Points beyond the 90th percentile are treated as **LOW** by default (`strict_outlier=True`); set it to `False` to reproduce a literal "one-signal-is-MED" rule. The mapping is pure and table-driven, so it's auditable and unit-tested exhaustively.
 
-This default tiering is **free** (no labels) but **arbitrary**: the cuts are tied to the distance distribution, not to the error rate you actually care about. When you *do* have a labelled calibration set, `tier_calibration.py` defines the tiers by what they promise instead (see [§5](#5-label-calibrated-tiers-tier_calibrationpy)) — it's strictly opt-in via `pipeline.calibrate(...)`, and the p50/p90 table stays the default until you call it.
+This default tiering is **free** (no labels) but **arbitrary**: the cuts are tied to the distance distribution, not to the error rate you actually care about. When you *do* have a labelled calibration set, `tier_calibration.py` defines the tiers by what they promise instead (see [the optional calibrated tiers below](#optional-label-calibrated-tiers-tier_calibrationpy)) — it's strictly opt-in via `pipeline.calibrate(...)`, and the p50/p90 table stays the default until you call it.
 
 ### 3. From tiering to automated QA
 
@@ -118,7 +118,7 @@ for tier, group in group_by_effort(recs).items():
 
 The bucketing never contradicts the cost ladder (there's a test for that): a heavier tier always implies a strictly costlier action.
 
-### 5. Label-calibrated tiers (`tier_calibration.py`)
+### Optional: label-calibrated tiers (`tier_calibration.py`)
 
 The p50/p90 defaults are free but arbitrary — they encode "how far from training data?", not "how much can I trust this?". Given a **labelled calibration set**, `tier_calibration.py` defines the tiers by what they actually promise, in two composed steps:
 
@@ -139,22 +139,18 @@ scored = pipe.score(prod_inputs)                             # HIGH now means "<
 
 ## Usage
 
+The core surface is small: construct a pipeline with an embedder, `fit` the OOD reference on training data, and `score` production inputs into `(OODResult, tier)` pairs. The monitoring → diagnostics → remediation half is shown in [Example](#example-wrapping-a-classifier) below.
+
 ```python
-import numpy as np
-from pitwaller import ConfidencePipeline, MockEmbedder, aggregate, recommend, PredictionRecord
+from pitwaller import ConfidencePipeline, MockEmbedder
 
 # Swap MockEmbedder for EffNetB4Embedder in production (needs `pitwaller[torch]`).
 pipe = ConfidencePipeline(MockEmbedder(dim=64), k=10, contamination=0.05)
-pipe.fit(train_inputs)                      # fit OOD reference on training data
+pipe.fit(train_inputs)                       # fit the OOD reference on training data
+scored = pipe.score(production_inputs)       # -> [ScoredSample(ood=..., tier=...)]
 
-scored = pipe.score(production_inputs)      # -> [ScoredSample(ood=..., tier=...)]
-
-records = [PredictionRecord(ood=s.ood, tier=s.tier, pred_label=p, true_label=y)
-           for s, p, y in zip(scored, preds, labels)]
-diag = aggregate(records, baseline_high_rate=0.85, baseline_accuracy=0.95)
-
-for rec in recommend(diag):
-    print(rec.severity.value, rec.action.value, "-", rec.rationale)
+# Optional: with a labelled set, recalibrate the tiers to target error rates.
+pipe.calibrate(cal_inputs, cal_correct, risk_high=0.01, risk_med=0.05)
 ```
 
 Using real EfficientNet-B4 features:
@@ -253,10 +249,10 @@ src/pitwaller/
   embeddings.py   Embedder protocol; MockEmbedder + EffNetB4Embedder
   index.py        FAISS HNSW index (+ numpy brute-force fallback)
   ood.py          kNN-distance + Isolation Forest, percentile thresholds
-  confidence.py   HIGH / MED / LOW tiering (pure, table-driven)
-  tier_calibration.py  label-calibrated tiers: reliability map + risk-targeted cuts
-  calibration.py  conformal thresholds, risk-coverage/AURC, cost/constraint
-                  operating points, bootstrap CIs
+  confidence.py   default HIGH / MED / LOW tiering from the OOD signals (label-free)
+  tier_calibration.py  opt-in tier upgrade: reliability map + risk-targeted cuts (needs labels)
+  calibration.py  standalone single-threshold toolkit (independent of the above):
+                  conformal bounds, risk-coverage/AURC, cost/constraint, bootstrap CIs
   bn_recal.py     BatchNorm recal: 2-Wasserstein shift test, AdaBN, McNemar
   monitoring.py   aggregate predictions -> diagnostics
   decisions.py    remediation escalation policy engine
@@ -268,8 +264,9 @@ examples/         quickstart.py, calibration_analysis.py
 
 ## Limitations & when to use this
 
-This system was developed for a highly specific use case, and depends on some highly specific assumptions: 
+This system was built for a specific use case and makes specific bets. The main assumptions and caveats:
 
+- **The tiers assume a monotonic distance–accuracy relationship.** The whole design rests on one empirical property: accuracy rises monotonically as inputs approach the dense core, so HIGH beats MED beats LOW. This held in the original system (and in the demo: 95% → 81% → 59%), but it is a property to *verify on your data*, not a guarantee — where OOD distance and accuracy decouple, the tiers carry no signal. The opt-in [label-calibrated tiers](#optional-label-calibrated-tiers-tier_calibrationpy) measure this relationship directly instead of assuming it.
 - **OOD distance is a proxy for error, not error itself.** It flags inputs that are *novel*, not inputs that are *wrong*; confident in-distribution mistakes (overlapping classes, label noise, hard examples) pass through as HIGH.
 - **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls — only the label-dependent accuracy monitor will notice.
 - **It works in the model's own feature space**, which is optimised for class separation, not density. Genuinely novel inputs can collapse into dense regions and score as in-distribution, and in high dimensions the distance bands are thin and noise-sensitive.
