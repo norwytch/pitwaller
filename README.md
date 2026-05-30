@@ -2,7 +2,7 @@
 
 **Embedding-space out-of-distribution detection, confidence tiering, and automated QA for binary classifiers.**
 
-Given a binary classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case, and distribution as detailed in Limitations. 
+Given a binary classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case and distribution as detailed in Limitations. 
 
 Our demo runs end-to-end on synthetic data out of the box. To test:
 
@@ -29,9 +29,17 @@ Remediation -- biggest job required: ENGINE_REBUILD
 [ENGINE_REBUILD]
   - FULL_BACKBONE_RETRAIN  (days, gpu:heavy, labels, redeploy)
       Accuracy down 16.0% (severe, broad); retrain the full backbone on a refreshed dataset.
+
+Label-calibrated tiers -- cuts placed at target error rates (ECE=0.03):
+  p50/p90 marked 88 HIGH; risk-targeting re-tiers the same batch by tolerated error.
+  accept HIGH      n= 13 (6%)  realised error 8%  (target <=5%)
+  accept HIGH+MED  n=147 (74%)  realised error 14%  (target <=15%)
+  route LOW        n= 53 (26%)  -- send to review / fallback
 ```
 
-Notice the accuracy-by-tier line: **95% → 81% → 59%**. The confidence tier is monotonically related to accuracy, which is the empirical property the entire design depends on and exploits.
+Note: the monotonic relationship between accuracy and OOD-distance based confidence tiering is a requirement for this framework. For more notes on this, see Limitations. 
+
+The final block is the optional **label-calibrated tiering** ([§5](#5-label-calibrated-tiers-tier_calibrationpy)): given a labelled set, the cuts are placed at *tolerated error rates* instead of distance percentiles, so the over-generous 88 HIGH collapses to the 13 that actually clear a 5% error bar.
 
 ---
 
@@ -65,6 +73,8 @@ We use the classifier's penultimate-layer embeddings, in this case the 1792-dim 
 | margin / outlier | both concerned | **LOW** |
 
 Points beyond the 90th percentile are treated as **LOW** by default (`strict_outlier=True`); set it to `False` to reproduce a literal "one-signal-is-MED" rule. The mapping is pure and table-driven, so it's auditable and unit-tested exhaustively.
+
+This default tiering is **free** (no labels) but **arbitrary**: the cuts are tied to the distance distribution, not to the error rate you actually care about. When you *do* have a labelled calibration set, `tier_calibration.py` defines the tiers by what they promise instead (see [§5](#5-label-calibrated-tiers-tier_calibrationpy)) — it's strictly opt-in via `pipeline.calibrate(...)`, and the p50/p90 table stays the default until you call it.
 
 ### 3. From tiering to automated QA
 
@@ -107,6 +117,23 @@ for tier, group in group_by_effort(recs).items():
 ```
 
 The bucketing never contradicts the cost ladder (there's a test for that): a heavier tier always implies a strictly costlier action.
+
+### 5. Label-calibrated tiers (`tier_calibration.py`)
+
+The p50/p90 defaults are free but arbitrary — they encode "how far from training data?", not "how much can I trust this?". Given a **labelled calibration set**, `tier_calibration.py` defines the tiers by what they actually promise, in two composed steps:
+
+1. **Fuse the signals into one calibrated reliability score.** A monotonic map `[kNN distance, IF score, …] → P(correct)` (standardise + logistic regression) replaces *both* the percentile cuts and the AND/OR table with a single ordered, auditable score. It uses the *continuous* Isolation-Forest score (now exposed as `OODResult.if_score`) rather than the thresholded flag, so it fuses the raw signal instead of throwing information away. Fit quality is checked with a reliability diagram and ECE; the standardised coefficients show how each signal moves reliability.
+2. **Place the cuts at risk targets.** The cuts bound the **selective risk** of each *cumulative* accept set: accepting everything tiered HIGH keeps the error rate under `risk_high` (default 1%), accepting HIGH+MED under `risk_med` (default 5%), the rest LOW — exactly the quantity an operator routes on ("if I auto-accept HIGH, what's my error?"). Pass `delta` for a finite-sample guarantee: a Hoeffding bound on the risk is tested down a nested sequence of thresholds (RCPS / fixed-sequence Learn-then-Test), so "HIGH" means *certified* ≤ `risk_high` error — at the cost of needing enough calibration points to certify a small risk (with `delta=None` the empirical max-coverage cut holds in-sample, with the usual out-of-sample slack).
+
+It's strictly opt-in and non-breaking — the pipeline uses p50/p90 until you call `calibrate`:
+
+```python
+pipe = ConfidencePipeline(embedder).fit(train_inputs)        # p50/p90 tiering
+pipe.calibrate(cal_inputs, cal_correct, risk_high=0.01, risk_med=0.05)  # -> risk-targeted
+scored = pipe.score(prod_inputs)                             # HIGH now means "<=1% error"
+```
+
+`python -m pitwaller.demo` shows this on the synthetic batch (`risk_high=5%, risk_med=15%`): the p50/p90 rule called **88** samples HIGH, but risk-targeting keeps only the **13** that clear a 5% bar, and accepting HIGH+MED (74% coverage) realises **14%** error against its 15% target — with a low ECE, so the ordering is measured, not asserted.
 
 ---
 
@@ -227,6 +254,7 @@ src/pitwaller/
   index.py        FAISS HNSW index (+ numpy brute-force fallback)
   ood.py          kNN-distance + Isolation Forest, percentile thresholds
   confidence.py   HIGH / MED / LOW tiering (pure, table-driven)
+  tier_calibration.py  label-calibrated tiers: reliability map + risk-targeted cuts
   calibration.py  conformal thresholds, risk-coverage/AURC, cost/constraint
                   operating points, bootstrap CIs
   bn_recal.py     BatchNorm recal: 2-Wasserstein shift test, AdaBN, McNemar
@@ -234,7 +262,7 @@ src/pitwaller/
   decisions.py    remediation escalation policy engine
   pipeline.py     end-to-end orchestration
   demo.py         runnable synthetic walkthrough
-tests/            80 tests across every component
+tests/            92 tests across every component
 examples/         quickstart.py, calibration_analysis.py
 ```
 
@@ -272,7 +300,7 @@ This system was developed for a highly specific use case, and depends on some hi
 pip install -e .              # core: numpy, scikit-learn, faiss-cpu
 pip install -e '.[torch]'     # + real EfficientNet-B4 features
 pip install -e '.[dev]'       # + pytest, ruff
-pytest                        # 80 tests
+pytest                        # 92 tests
 ```
 
 ## License

@@ -50,6 +50,13 @@ from .index import HNSWConfig, VectorIndex
 from .monitoring import Diagnostics, PredictionRecord, aggregate
 from .ood import OODModel, OODResult
 from .pipeline import ConfidencePipeline, ScoredSample
+from .tier_calibration import (
+    ReliabilityModel,
+    TierCalibration,
+    TierCalibrator,
+    ood_features,
+    risk_targeted_threshold,
+)
 
 __version__ = "0.1.0"
 
@@ -66,6 +73,11 @@ __all__ = [
     "Tier",
     "tier_for",
     "tier_all",
+    "TierCalibrator",
+    "TierCalibration",
+    "ReliabilityModel",
+    "ood_features",
+    "risk_targeted_threshold",
     "Diagnostics",
     "PredictionRecord",
     "aggregate",

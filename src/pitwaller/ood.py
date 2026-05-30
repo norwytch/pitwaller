@@ -39,12 +39,17 @@ class OODResult:
     """Per-sample OOD readout.
 
     ``band`` is one of ``"core"`` (<= p50), ``"margin"`` (p50-p90),
-    ``"outlier"`` (> p90).
+    ``"outlier"`` (> p90). ``if_score`` is the Isolation Forest's *continuous*
+    anomaly score (``decision_function``: higher = more in-distribution),
+    retained alongside the ``if_outlier`` boolean so a calibrated tiering layer
+    can fuse the raw signal rather than a thresholded flag (see
+    :mod:`pitwaller.tier_calibration`).
     """
 
     knn_distance: float
     band: str
     if_outlier: bool
+    if_score: float = 0.0
 
     @property
     def dist_concern(self) -> bool:
@@ -121,11 +126,13 @@ class OODModel:
         X = np.ascontiguousarray(X, dtype=np.float32)
         knn = self._knn_distance(X)
         if_pred = self.iforest.predict(X)  # +1 inlier, -1 anomaly
+        if_score = self.iforest.decision_function(X)  # higher = more in-distribution
         return [
             OODResult(
                 knn_distance=float(knn[i]),
                 band=self._band(float(knn[i])),
                 if_outlier=bool(if_pred[i] == -1),
+                if_score=float(if_score[i]),
             )
             for i in range(X.shape[0])
         ]
