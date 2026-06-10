@@ -51,7 +51,8 @@ def ood_features(results: list[OODResult]) -> np.ndarray:
     Returns an ``(N, 2)`` array of ``[knn_distance, if_score]`` -- the two raw,
     *continuous* OOD signals. Pass your own ``feature_fn`` to
     :meth:`TierCalibrator.fit` (and the pipeline) to fold in extra per-sample
-    signals such as max-softmax or the logit margin.
+    signals such as max-softmax, the logit margin, or ensemble disagreement (an
+    epistemic-uncertainty channel).
     """
     return np.array([[r.knn_distance, r.if_score] for r in results], dtype=float)
 
