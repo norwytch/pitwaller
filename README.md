@@ -44,7 +44,7 @@ Label-calibrated tiers -- cuts placed at target error rates (ECE=0.03):
 
 Note: the monotonic relationship between accuracy and OOD-distance based confidence tiering is a requirement for this framework. For more notes on this, see [Limitations](#limitations--when-to-use-this). 
 
-The final block is the optional **label-calibrated tiering** ([details below](#optional-label-calibrated-tiers-tier_calibrationpy)): given a labelled set, the cuts are placed at *tolerated error rates* instead of distance percentiles, so the over-generous 88 HIGH collapses to the 13 that actually clear a 5% error bar.
+The last block shows optional [label-calibrated tiering](#optional-label-calibrated-tiers-tier_calibrationpy): with labels, the cuts are set by tolerated error rate instead of distance percentile, so the 88 HIGH shrinks to the 13 that clear a 5% error bar.
 
 ---
 
@@ -64,9 +64,9 @@ flowchart LR
 
 ### 1. OOD detection in the model's own feature space
 
-We use the classifier's penultimate-layer embeddings, in this case the 1792-dim global-pooled features of EfficientNet-B4. The training set's embeddings define the in-distribution manifold. Two independent detectors run over them:
+We work in the classifier's own feature space: the 1792-dim global-pooled features of EfficientNet-B4. The training embeddings define the in-distribution manifold, and two independent detectors run over them:
 
-- **kNN distance** via a **FAISS HNSW** index. For any input, the mean distance to its *k* nearest training neighbours is a non-parametric local-density score. Calibrated against the training set's own distance distribution, it yields two cut-points: the **50th percentile** (edge of the dense core) and the **90th percentile** (beyond which a point is sparser than 90% of training data).
+- **kNN distance** via a FAISS HNSW index. The mean distance to an input's k nearest training neighbours is a local-density score. Calibrated on the training set's own distances, it gives two cut-points: the 50th percentile (edge of the dense core) and the 90th (sparser than 90% of training data).
 - **Isolation Forest**, a global structural anomaly detector that catches off-manifold points kNN distance alone can miss.
 
 ### 2. Confidence tiering
@@ -77,13 +77,13 @@ We use the classifier's penultimate-layer embeddings, in this case the 1792-dim 
 | core / margin | exactly one detector concerned | **MED** |
 | margin / outlier | both concerned | **LOW** |
 
-Points beyond the 90th percentile are treated as **LOW** by default (`strict_outlier=True`); set it to `False` to reproduce a literal "one-signal-is-MED" rule. The mapping is pure and table-driven, so it's auditable and unit-tested exhaustively.
+Points past the 90th percentile default to LOW (`strict_outlier=True`); set it `False` for the literal "one-signal-is-MED" rule. The mapping is table-driven and exhaustively unit-tested.
 
-This default tiering is **free** (no labels) but **arbitrary**: the cuts are tied to the distance distribution, not to the error rate you actually care about. When you *do* have a labelled calibration set, `tier_calibration.py` defines the tiers by what they promise instead (see [the optional calibrated tiers below](#optional-label-calibrated-tiers-tier_calibrationpy)) — it's strictly opt-in via `pipeline.calibrate(...)`, and the p50/p90 table stays the default until you call it.
+This tiering needs no labels but is arbitrary: the cuts track the distance distribution, not the error rate you care about. With a labelled calibration set, [`tier_calibration.py`](#optional-label-calibrated-tiers-tier_calibrationpy) sets the tiers by error rate instead. It's opt-in via `pipeline.calibrate(...)`; p50/p90 stays the default until you call it.
 
 ### 3. From tiering to automated QA
 
-Monitoring aggregates production predictions into **diagnostics** (OOD rate, tier-distribution drift, accuracy overall and per-tier, per-class recall). A transparent, priority-ordered **policy engine** maps those diagnostics onto a remediation ladder, cheapest and least destructive first:
+Monitoring aggregates predictions into diagnostics (OOD rate, tier drift, accuracy overall and per-tier, per-class recall). A policy engine maps those onto a remediation ladder, cheapest fix first:
 
 | Action | Triggered by |
 |--------|--------------|
@@ -93,13 +93,13 @@ Monitoring aggregates production predictions into **diagnostics** (OOD rate, tie
 | `ADASYN_REBALANCE` | one or more classes' recall collapsing |
 | `FULL_BACKBONE_RETRAIN` | severe broad accuracy drop |
 | `PRUNING` | latency/size pressure while accuracy is healthy |
-| `ARCHITECTURE_REBUILD` | OOD rate stays high *after* retraining — the capacity ceiling |
+| `ARCHITECTURE_REBUILD` | OOD rate stays high after retraining (the capacity ceiling) |
 
-We diagnose the type and magnitude of failure, and escalate the recommendation when a cheap fix has been applied repeatedly without resolving the issue.
+The engine diagnoses the kind and size of failure, and escalates when a cheap fix has been tried repeatedly without resolving it.
 
 ### 4. Pit stop vs. engine rebuild
 
-Each type of remedial action is categorized in an effort tier according to how time-, labor-, and cost-intensive the fix is expected to be. We also specify whether the model can remain live in production during the remediation.
+Each action carries an effort tier: how time-, labor-, and compute-intensive the fix is, and whether the model stays live during it.
 
 | Effort tier | Actions | What it costs | Model live? |
 |-------------|---------|---------------|-------------|
@@ -108,9 +108,9 @@ Each type of remedial action is categorized in an effort tier according to how t
 | **ENGINE_REBUILD** | full backbone retrain | retrain the whole backbone, days, heavy GPU | ⛔ redeploy |
 | **NEW_BUILD** | architecture rebuild | clean-sheet redesign, weeks, research effort | ⛔ redeploy |
 
-(`GREEN_FLAG` is the fifth, no-action tier — everything within tolerance.)
+(`GREEN_FLAG` is the fifth, no-action tier: everything within tolerance.)
 
-`recommend()` returns recommendations cheapest-first; `group_by_effort()` buckets them by tier and `heaviest_tier()` tells you the biggest job this round of QA actually requires — so an operator instantly knows whether they're looking at a splash-and-go or a trip to the garage:
+`recommend()` returns actions cheapest-first; `group_by_effort()` buckets them by tier, and `heaviest_tier()` reports the biggest job this round requires:
 
 ```python
 from pitwaller import recommend, group_by_effort, heaviest_tier
@@ -125,12 +125,12 @@ The bucketing never contradicts the cost ladder (there's a test for that): a hea
 
 ### Optional: label-calibrated tiers (`tier_calibration.py`)
 
-The p50/p90 defaults are free but arbitrary — they encode "how far from training data?", not "how much can I trust this?". Given a **labelled calibration set**, `tier_calibration.py` defines the tiers by what they actually promise, in two composed steps:
+The p50/p90 cuts answer "how far from training data?", not "how much can I trust this?". Given a labelled calibration set, `tier_calibration.py` sets the tiers by what they promise, in two steps:
 
-1. **Fuse the signals into one calibrated reliability score.** A monotonic map `[kNN distance, IF score, …] → P(correct)` (standardise + logistic regression) replaces *both* the percentile cuts and the AND/OR table with a single ordered, auditable score. It uses the *continuous* Isolation-Forest score (now exposed as `OODResult.if_score`) rather than the thresholded flag, so it fuses the raw signal instead of throwing information away. Fit quality is checked with a reliability diagram and ECE; the standardised coefficients show how each signal moves reliability.
-2. **Place the cuts at risk targets.** The cuts bound the **selective risk** of each *cumulative* accept set: accepting everything tiered HIGH keeps the error rate under `risk_high` (default 1%), accepting HIGH+MED under `risk_med` (default 5%), the rest LOW — exactly the quantity an operator routes on ("if I auto-accept HIGH, what's my error?"). Pass `delta` for a finite-sample guarantee: a Hoeffding bound on the risk is tested down a nested sequence of thresholds (RCPS / fixed-sequence Learn-then-Test), so "HIGH" means *certified* ≤ `risk_high` error — at the cost of needing enough calibration points to certify a small risk (with `delta=None` the empirical max-coverage cut holds in-sample, with the usual out-of-sample slack).
+1. **Fuse the signals into one reliability score.** A logistic map `[kNN distance, IF score, …] → P(correct)` replaces both the percentile cuts and the AND/OR table with a single ordered score. It uses the continuous Isolation-Forest score (`OODResult.if_score`), not the thresholded flag, so no information is discarded. A reliability diagram and ECE check the fit; the coefficients show how each signal moves reliability.
+2. **Place the cuts at risk targets.** Each cut bounds the selective risk of a cumulative accept set: accept everything tiered HIGH and the error rate stays under `risk_high` (default 1%); accept HIGH+MED and it stays under `risk_med` (default 5%). This is what an operator routes on ("if I auto-accept HIGH, what's my error?"). Pass `delta` for a finite-sample guarantee (a Hoeffding bound tested down a nested threshold sequence, RCPS-style), so HIGH means certified ≤ `risk_high` error. With `delta=None` the empirical cut holds in-sample, with the usual out-of-sample slack.
 
-It's strictly opt-in and non-breaking — the pipeline uses p50/p90 until you call `calibrate`:
+It's opt-in: the pipeline uses p50/p90 until you call `calibrate`:
 
 ```python
 pipe = ConfidencePipeline(embedder).fit(train_inputs)        # p50/p90 tiering
@@ -138,13 +138,13 @@ pipe.calibrate(cal_inputs, cal_correct, risk_high=0.01, risk_med=0.05)  # -> ris
 scored = pipe.score(prod_inputs)                             # HIGH now means "<=1% error"
 ```
 
-`python -m pitwaller.demo` shows this on the synthetic batch (`risk_high=5%, risk_med=15%`): the p50/p90 rule called **88** samples HIGH, but risk-targeting keeps only the **13** that clear a 5% bar, and accepting HIGH+MED (74% coverage) realises **14%** error against its 15% target — with a low ECE, so the ordering is measured, not asserted.
+`python -m pitwaller.demo` shows this: p50/p90 calls 88 samples HIGH, risk-targeting keeps the 13 that clear a 5% bar, and HIGH+MED (74% coverage) realises 14% error against a 15% target.
 
 ---
 
 ## Usage
 
-The core surface is small: construct a pipeline with an embedder, `fit` the OOD reference on training data, and `score` production inputs into `(OODResult, tier)` pairs. The monitoring → diagnostics → remediation half is shown in [Example](#example-wrapping-a-classifier) below.
+Construct a pipeline with an embedder, `fit` the OOD reference, and `score` production inputs into `(OODResult, tier)` pairs. The monitoring and remediation half is in [Example](#example-wrapping-a-classifier) below.
 
 ```python
 from pitwaller import ConfidencePipeline, MockEmbedder
@@ -178,12 +178,12 @@ pipe = ConfidencePipeline(emb).fit(train_batches)
 
 ### Choosing the embedding
 
-The OOD stack is substrate-agnostic — everything downstream of the `Embedder` works on whatever features you feed it — so the most consequential choice is *which* representation you measure novelty in:
+The OOD stack is substrate-agnostic: everything downstream of `Embedder` works on whatever features you feed it. The main choice is which representation you measure novelty in:
 
-- **The model's own task features** (`EffNetB4Embedder`) measure novelty *relative to what that model attends to*. Good when you're gating **this model's** competence — "is this input outside what my classifier was built to handle?" But these features are tuned to the training label set and collapse whatever was irrelevant to that task, so semantic content along those collapsed axes maps into existing clusters and goes undetected. A model can't reliably surface, through its own representation, the content it was never built to perceive.
-- **Foundation / vision-language features** (`CLIPEmbedder`; DINOv2 is another strong option) carry broad semantic content rather than a narrow label set, so they're far stronger for detecting genuinely **novel content** (near-OOD / open-set / new categories). CLIP additionally lets you *characterize* what's novel by comparing against text-grounded concepts, not just flag that something is.
+- **The model's own task features** (`EffNetB4Embedder`) measure novelty relative to what the model attends to. Good for gating this model's competence ("is this input outside what my classifier handles?"). But they're tuned to the training labels and collapse whatever was irrelevant to the task, so novelty along those collapsed axes maps into existing clusters and goes undetected.
+- **Foundation / vision-language features** (`CLIPEmbedder`, or DINOv2) carry broad semantic content, so they're stronger for detecting genuinely novel content (near-OOD / open-set / new categories). CLIP also lets you characterise what's novel against text concepts, not just flag that it is.
 
-Rule of thumb: gating one model's competence → its own features are fine; cataloguing semantic content outside the training distribution (the open-set/novel-category goal) → use a foundation embedding. For near-OOD semantic novelty the representation matters more than the OOD score, so swapping the substrate moves the needle more than tuning kNN vs Isolation Forest.
+Rule of thumb: gating one model's competence → its own features; cataloguing novel content (open-set / new categories) → a foundation embedding. For near-OOD novelty the representation matters more than the OOD score, so the substrate choice beats tuning kNN vs Isolation Forest.
 
 ---
 
@@ -222,7 +222,7 @@ for rec in recommend(diag):
     print(rec.severity.value, rec.action.value, "-", rec.rationale)
 ```
 
-If the policy recommends `BN_RECALIBRATION` (covariate shift — inputs drifted, accuracy held), `bn_recal.py` gives you the justify → recalibrate → validate path so you don't fire it blind:
+If the policy recommends `BN_RECALIBRATION` (covariate shift: inputs drifted, accuracy held), `bn_recal.py` gives the justify → recalibrate → validate path so you don't fire it blind:
 
 ```python
 from pitwaller.bn_recal import (
@@ -271,30 +271,30 @@ examples/         quickstart.py, calibration_analysis.py
 
 This system was built for a specific use case and makes specific bets. The main assumptions and caveats:
 
-- **The tiers assume a monotonic distance–accuracy relationship.** The whole design rests on one empirical property: accuracy rises monotonically as inputs approach the dense core, so HIGH beats MED beats LOW. This held in the original system (and in the demo: 95% → 81% → 59%), but it is a property to *verify on your data*, not a guarantee — where OOD distance and accuracy decouple, the tiers carry no signal. The opt-in [label-calibrated tiers](#optional-label-calibrated-tiers-tier_calibrationpy) measure this relationship directly instead of assuming it.
+- **The tiers assume a monotonic distance–accuracy relationship.** The design rests on accuracy rising as inputs approach the dense core (HIGH > MED > LOW). This held in the original system and the demo (95% → 81% → 59%), but verify it on your data: where distance and accuracy decouple, the tiers carry no signal. The optional [label-calibrated tiers](#optional-label-calibrated-tiers-tier_calibrationpy) measure the relationship instead of assuming it.
 - **OOD distance is a proxy for error, not error itself.** It flags inputs that are *novel*, not inputs that are *wrong*; confident in-distribution mistakes (overlapping classes, label noise, hard examples) pass through as HIGH.
-- **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls — only the label-dependent accuracy monitor will notice.
-- **It works in the model's own feature space**, which is optimised for class separation, not density. Genuinely novel inputs can collapse into dense regions and score as in-distribution, and in high dimensions the distance bands are thin and noise-sensitive.
+- **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls; only the label-dependent accuracy monitor notices.
+- **It works in the model's own feature space**, which is optimised for class separation, not density. Novel inputs can collapse into dense regions and score as in-distribution, and in high dimensions the distance bands are thin and noise-sensitive.
 - **The supervised half needs labels.** Accuracy-, recall-, and McNemar-based triggers depend on labelled production data, which is usually delayed and selection-biased; without labels you only have the unsupervised OOD signals.
-- **The remediation policy is heuristic.** Its thresholds are tunable defaults, its symptom→fix mapping is correlational, and it has no built-in outcome feedback — treat its output as a ranked suggestion for a human, not an autopilot.
+- **The remediation policy is heuristic.** Its thresholds are tunable defaults, its symptom→fix mapping is correlational, and it has no outcome feedback. Treat its output as a ranked suggestion for a human, not an autopilot.
 - **Conformal guarantees assume exchangeability**, which shift violates; the weighted variant helps only with good density-ratio estimates, and coverage is marginal, not per-class.
 
 ### Worth the effort when
 
-- **Silent errors are expensive** — medical imaging, defect detection, perception, fraud — so routing low-confidence cases to a human or fallback pays for the overhead.
-- **Your real risk is covariate shift** — new sensors/cameras, seasonal or geographic drift, an evolving input mix — which is the failure mode it actually detects well.
+- **Silent errors are expensive** (medical imaging, defect detection, perception, fraud), so routing low-confidence cases to a human or fallback pays off.
+- **Your real risk is covariate shift** (new sensors/cameras, seasonal or geographic drift, an evolving input mix), the failure mode it detects well.
 - **The model is long-lived and you'll maintain it**, so the per-checkpoint cost of rebuilding the index and recalibrating amortises.
-- **The training distribution has clear structure** — clustered, well-sampled, with novel inputs genuinely off-manifold — so the kNN/IF geometry separates cleanly.
-- **You can act on the tiers** — a review queue, a fallback model, a retraining loop — and at least some labels arrive eventually.
+- **The training distribution has clear structure** (clustered, well-sampled, novel inputs off-manifold), so the kNN/IF geometry separates cleanly.
+- **You can act on the tiers** (a review queue, a fallback model, a retraining loop), and at least some labels arrive eventually.
 
 ### Probably overkill when
 
-- **Errors are cheap or easily corrected** (recommendations, soft tagging) — a max-softmax threshold or a simple accuracy dashboard is enough.
-- **The input stream is stationary** (closed-world, controlled capture conditions) — drift detection is solving a non-problem.
-- **Your dominant risk is concept or label drift** — invest in labelled drift tests on p(y|x) instead; this system is largely blind to it.
-- **The model is short-lived** (prototypes, rapidly-replaced models) — the maintenance overhead never amortises.
-- **Serving is latency- or memory-constrained** (edge) — a parametric score (Mahalanobis, energy) beats carrying the whole training-embedding index and running kNN per inference.
-- **You have no labels and no capacity to act** — the auto-QA loop is then decorative.
+- **Errors are cheap or easily corrected** (recommendations, soft tagging): a max-softmax threshold or simple accuracy dashboard is enough.
+- **The input stream is stationary** (closed-world, controlled capture): drift detection is solving a non-problem.
+- **Your dominant risk is concept or label drift**: invest in labelled drift tests on p(y|x) instead; this system is largely blind to it.
+- **The model is short-lived** (prototypes, rapidly-replaced models): the maintenance overhead never amortises.
+- **Serving is latency- or memory-constrained** (edge): a parametric score (Mahalanobis, energy) beats carrying the whole training-embedding index and running kNN per inference.
+- **You have no labels and no capacity to act**: the auto-QA loop is then decorative.
 
 ## Install
 
