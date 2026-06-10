@@ -7,11 +7,11 @@
 
 **Embedding-space out-of-distribution detection, confidence tiering, and automated QA for classifiers.**
 
-Given a trained classifier and its training set, `pitwaller` scores each production input against the model's own feature space, sorts it into a confidence tier (HIGH / MED / LOW), and — when quality degrades — recommends the cheapest corrective action. The OOD and tiering core is substrate-agnostic: it works on any classifier's embeddings, whether image, text, or tabular. It depends on assumptions detailed in [Limitations](#limitations--when-to-use-this).
+Given a trained classifier and its training set, `pitwaller` scores each production input against the model's own feature space, sorts it into a confidence tier (HIGH / MED / LOW), and recommends the cheapest corrective action when quality degrades. The OOD and tiering core is substrate-agnostic: it works on any classifier's embeddings, whether image, text, or tabular. It depends on assumptions detailed in [Limitations](#limitations--when-to-use-this).
 
-## Does it work?
+## Results
 
-**Covariate shift — the case it is built for.** A sentiment classifier trained on movie reviews (Rotten Tomatoes), then fed product reviews (Amazon) as a shifted input domain with the same pos/neg labels. The embedding-space OOD score flags the shift that max-softmax is blind to:
+**Covariate shift: the case it is built for.** A sentiment classifier trained on movie reviews (Rotten Tomatoes), then fed product reviews (Amazon) as a shifted input domain with the same pos/neg labels. The embedding-space OOD score flags the shift that max-softmax is blind to:
 
 ```
 Detecting the shifted domain (AUROC, product vs movie):
@@ -19,9 +19,9 @@ Detecting the shifted domain (AUROC, product vs movie):
   max-softmax baseline   : 0.508    (chance)
 ```
 
-Max-softmax confidence barely moves across domains (70.8% in-domain → 70.5% shifted), so it cannot tell anything changed; the kNN-distance score catches it. Accuracy itself only dips 74% → 72% here — the point is that the OOD signal fires on the *input* shift, not that accuracy has to collapse first.
+Max-softmax confidence barely moves across domains (70.8% in-domain → 70.5% shifted), so it cannot tell anything changed; the kNN-distance score catches it. Accuracy itself only dips 74% → 72% here; the point is that the OOD signal fires on the input shift, not that accuracy has to collapse first.
 
-**Near-OOD — confidence tiers track accuracy.** On 20 Newsgroups with held-out categories, accuracy falls monotonically down the tiers, emergent from real data rather than assigned:
+**Near-OOD: confidence tiers track accuracy.** On 20 Newsgroups with held-out categories, accuracy falls monotonically down the tiers, measured on real data rather than assigned:
 
 ```
 Accuracy by confidence tier:  HIGH 94%  >  MED 92%  >  LOW 75%
@@ -37,7 +37,7 @@ python examples/benchmark_text_ood.py          # tier-accuracy curve on near-OOD
 
 Or run the whole pipeline on synthetic data with no downloads, as a smoke test: `pip install -e . && python -m pitwaller.demo`.
 
-The tiers are only meaningful where accuracy rises toward the dense core — a property to verify on your data, not assume (see [Limitations](#limitations--when-to-use-this)).
+The tiers are only meaningful where accuracy rises toward the dense core, a property to verify on your data rather than assume (see [Limitations](#limitations--when-to-use-this)).
 
 ---
 
@@ -57,7 +57,7 @@ flowchart LR
 
 ### 1. OOD detection in the model's own feature space
 
-We work in the classifier's own feature space — its penultimate-layer embeddings (e.g. EfficientNet-B4's 1792-dim pooled features for images, an MLP's last hidden layer for tabular, or a sentence-transformer's vectors for text). The training embeddings define the in-distribution manifold, and two independent detectors run over them:
+We work in the classifier's own feature space, its penultimate-layer embeddings (e.g. EfficientNet-B4's 1792-dim pooled features for images, an MLP's last hidden layer for tabular, or a sentence-transformer's vectors for text). The training embeddings define the in-distribution manifold, and two independent detectors run over them:
 
 - **kNN distance** via a FAISS HNSW index. The mean distance to an input's k nearest training neighbours is a local-density score. Calibrated on the training set's own distances, it gives two cut-points: the 50th percentile (edge of the dense core) and the 90th (sparser than 90% of training data).
 - **Isolation Forest**, a global structural anomaly detector that catches off-manifold points kNN distance alone can miss.
@@ -165,7 +165,7 @@ txt_pipe = ConfidencePipeline(SentenceTransformerEmbedder()).fit(docs)  # pitwal
 The OOD stack is substrate-agnostic: everything downstream of `Embedder` works on whatever features you feed it. The main choice is which representation you measure novelty in:
 
 - **The model's own task features** (`EffNetB4Embedder` for images, an MLP's last hidden layer for tabular) measure novelty relative to what the model attends to. Good for gating this model's competence ("is this input outside what my classifier handles?"). But they're tuned to the training labels and collapse whatever was irrelevant to the task, so novelty along those collapsed axes maps into existing clusters and goes undetected.
-- **Foundation features** (`CLIPEmbedder` or DINOv2 for images, `SentenceTransformerEmbedder` for text) carry broad semantic content, so they're stronger for detecting genuinely novel content (near-OOD / open-set / new categories). They also characterise *what* is novel, not just flag that something is.
+- **Foundation features** (`CLIPEmbedder` or DINOv2 for images, `SentenceTransformerEmbedder` for text) carry broad semantic content, so they're stronger for detecting novel content (near-OOD / open-set / new categories). They also characterise what is novel, not just flag that something is.
 
 Rule of thumb: gating one model's competence → its own features; cataloguing novel content (open-set / new categories) → a foundation embedding. For near-OOD novelty the representation matters more than the OOD score, so the substrate choice beats tuning kNN vs Isolation Forest.
 
@@ -180,7 +180,7 @@ from pitwaller import ConfidencePipeline, Tier
 from pitwaller.embeddings import SentenceTransformerEmbedder
 
 # Fit the OOD reference on the same data the classifier was trained on.
-# (Swap in any Embedder — EffNetB4Embedder for images, an MLP's features for tabular.)
+# (Swap in any Embedder: EffNetB4Embedder for images, an MLP's features for tabular.)
 pipe = ConfidencePipeline(SentenceTransformerEmbedder(), k=10, contamination=0.05)
 pipe.fit(train_docs)
 
@@ -258,7 +258,7 @@ examples/         quickstart.py, calibration_analysis.py,
 This system makes specific bets. The main assumptions and caveats:
 
 - **The tiers assume a monotonic distance–accuracy relationship.** The design rests on accuracy rising as inputs approach the dense core (HIGH > MED > LOW). This held on the near-OOD benchmark (HIGH 94% > MED 92% > LOW 75%), but verify it on your data: where distance and accuracy decouple, the tiers carry no signal. The optional [label-calibrated tiers](#optional-label-calibrated-tiers-tier_calibrationpy) measure the relationship instead of assuming it.
-- **OOD distance is a proxy for novelty, not error.** It flags inputs that are *novel*, not inputs that are *wrong*; confident in-distribution mistakes (overlapping classes, label noise, hard examples) pass through as HIGH. (The covariate-shift benchmark above is the flip side: it flags a shift even though accuracy barely drops.)
+- **OOD distance is a proxy for novelty, not error.** It flags inputs that are novel, not inputs that are wrong; confident in-distribution mistakes (overlapping classes, label noise, hard examples) pass through as HIGH. (The covariate-shift benchmark above is the flip side: it flags a shift even though accuracy barely drops.)
 - **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls; only the label-dependent accuracy monitor notices.
 - **It works in the model's own feature space**, which is optimised for class separation, not density. Novel inputs can collapse into dense regions and score as in-distribution, and in high dimensions the distance bands are thin and noise-sensitive.
 - **The supervised half needs labels.** Accuracy-, recall-, and McNemar-based triggers depend on labelled production data, which is usually delayed and selection-biased; without labels you only have the unsupervised OOD signals.
