@@ -255,22 +255,18 @@ examples/         quickstart.py, calibration_analysis.py,
 
 ## Limitations & when to use this
 
-This system makes specific bets. The main assumptions and caveats:
+This system makes specific bets. The main caveats:
 
-- **The tiers assume a monotonic distance–accuracy relationship.** The design rests on accuracy rising as inputs approach the dense core (HIGH > MED > LOW). This held on the near-OOD benchmark (HIGH 94% > MED 92% > LOW 75%), but verify it on your data: where distance and accuracy decouple, the tiers carry no signal. The optional [label-calibrated tiers](#optional-label-calibrated-tiers-tier_calibrationpy) measure the relationship instead of assuming it.
-- **OOD distance is a proxy for novelty, not error.** It flags inputs that are novel, not inputs that are wrong; confident in-distribution mistakes (overlapping classes, label noise, hard examples) pass through as HIGH. (The covariate-shift benchmark above is the flip side: it flags a shift even though accuracy barely drops.)
-- **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls; only the label-dependent accuracy monitor notices.
-- **It works in the model's own feature space**, which is optimised for class separation, not density. Novel inputs can collapse into dense regions and score as in-distribution, and in high dimensions the distance bands are thin and noise-sensitive.
-- **The supervised half needs labels.** Accuracy-, recall-, and McNemar-based triggers depend on labelled production data, which is usually delayed and selection-biased; without labels you only have the unsupervised OOD signals.
-- **The remediation policy is heuristic.** Its thresholds are tunable defaults, its symptom→fix mapping is correlational, and it has no outcome feedback. Treat its output as a ranked suggestion for a human, not an autopilot.
-- **Conformal guarantees assume exchangeability**, which shift violates; the weighted variant helps only with good density-ratio estimates, and coverage is marginal, not per-class.
+- **OOD distance is a proxy for novelty, not error.** The tiers work only where accuracy rises toward the dense core (HIGH > MED > LOW). It held on the near-OOD benchmark, but verify on your data: where distance and accuracy decouple, the tiers carry no signal. Confident in-distribution mistakes (overlapping classes, label noise) still score HIGH. The optional [label-calibrated tiers](#optional-label-calibrated-tiers-tier_calibrationpy) measure the relationship instead of assuming it.
+- **It detects covariate shift, not concept drift.** If p(x) is stable but p(y|x) changes, the OOD signals stay quiet while accuracy falls; only the labelled accuracy monitor notices.
+- **The feature space is tuned for class separation, not density.** Novel inputs can collapse into dense regions and score as in-distribution, and in high dimensions the distance bands are thin and noise-sensitive.
+- **The supervised half needs labels.** Accuracy-, recall-, and McNemar-based triggers depend on labelled production data, which is usually delayed and selection-biased.
+- **The remediation policy is heuristic.** Tunable-default thresholds, a correlational symptom→fix mapping, no outcome feedback. Treat its output as a ranked suggestion for a human, not an autopilot.
 
 ### Worth the effort when
 
-- **Silent errors are expensive** (medical imaging, defect detection, perception, fraud), so routing low-confidence cases to a human or fallback pays off.
-- **Your real risk is covariate shift** (new sensors/cameras, seasonal or geographic drift, an evolving input mix), the failure mode it detects well.
-- **The model is long-lived and you'll maintain it**, so the per-checkpoint cost of rebuilding the index and recalibrating amortises.
-- **The training distribution has clear structure** (clustered, well-sampled, novel inputs off-manifold), so the kNN/IF geometry separates cleanly.
+- **Silent errors are expensive** (medical imaging, defect detection, fraud), so routing low-confidence cases to a human or fallback pays off.
+- **Your real risk is covariate shift** (new sensors/cameras, seasonal or geographic drift), the failure mode it detects well.
 - **You can act on the tiers** (a review queue, a fallback model, a retraining loop), and at least some labels arrive eventually.
 
 ### Probably overkill when
@@ -278,9 +274,7 @@ This system makes specific bets. The main assumptions and caveats:
 - **Errors are cheap or easily corrected** (recommendations, soft tagging): a max-softmax threshold or simple accuracy dashboard is enough.
 - **The input stream is stationary** (closed-world, controlled capture): drift detection is solving a non-problem.
 - **Your dominant risk is concept or label drift**: invest in labelled drift tests on p(y|x) instead; this system is largely blind to it.
-- **The model is short-lived** (prototypes, rapidly-replaced models): the maintenance overhead never amortises.
 - **Serving is latency- or memory-constrained** (edge): a parametric score (Mahalanobis, energy) beats carrying the whole training-embedding index and running kNN per inference.
-- **You have no labels and no capacity to act**: the auto-QA loop is then decorative.
 
 ## Install
 
