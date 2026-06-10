@@ -35,7 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .monitoring import Diagnostics
+from ..monitoring import Diagnostics
 
 
 class Action(str, Enum):
@@ -197,7 +197,7 @@ class PolicyThresholds:
 class ThresholdDriftSignal:
     """Statistical evidence about whether the deployed threshold is stale.
 
-    Built from :mod:`pitwaller.calibration`: re-estimate the optimal cut on recent
+    Built from :mod:`pitwaller.experimental.calibration`: re-estimate the optimal cut on recent
     data (``new_threshold``) with a bootstrap CI (``ci_low``/``ci_high``), then
     ask whether the ``current_threshold`` still being served is a plausible
     value under that CI. If it falls outside, the cut has drifted beyond

@@ -18,10 +18,10 @@ Two *independent* detectors are fit on the training embeddings:
 Keeping them independent is deliberate: they fail in different ways, and the
 confidence tiering downstream combines their *agreement* into HIGH/MED/LOW.
 
-The original system observed that on the production set, OOD distance and model
-accuracy were monotonically related -- nearer the core, more accurate. That
-empirical monotonicity is what licenses using distance bands as a confidence
-proxy in the first place; ``OODModel`` is the component that measures it.
+The design rests on an empirical property: OOD distance and model accuracy tend
+to be monotonically related -- nearer the core, more accurate. That monotonicity
+is what licenses using distance bands as a confidence proxy in the first place;
+``OODModel`` is the component that measures it.
 """
 
 from __future__ import annotations

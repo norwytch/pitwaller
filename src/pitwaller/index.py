@@ -13,16 +13,23 @@ build cost. The two backends expose an identical interface.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
 
-try:
-    import faiss
-
-    _HAVE_FAISS = True
-except ImportError:  # pragma: no cover
+# Set PITWALLER_NO_FAISS=1 to skip importing faiss. On macOS, faiss-cpu and torch
+# each bundle an OpenMP runtime, and loading both in one process can crash or hang;
+# skipping the import falls back to the brute-force backend.
+if os.environ.get("PITWALLER_NO_FAISS"):
     _HAVE_FAISS = False
+else:
+    try:
+        import faiss
+
+        _HAVE_FAISS = True
+    except ImportError:  # pragma: no cover
+        _HAVE_FAISS = False
 
 
 @dataclass

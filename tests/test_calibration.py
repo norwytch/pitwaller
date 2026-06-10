@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pitwaller.calibration import (
+from pitwaller.experimental.calibration import (
     aurc,
     bootstrap_threshold_ci,
     conformal_threshold,

@@ -1,4 +1,4 @@
-from pitwaller.decisions import Action, PolicyThresholds, recommend
+from pitwaller.experimental.decisions import Action, PolicyThresholds, recommend
 from pitwaller.monitoring import Diagnostics
 
 
@@ -136,7 +136,7 @@ def test_escalation_promotes_repeated_cheap_fix():
 
 
 # --------------------------------------------------------------- effort tiers
-from pitwaller.decisions import (  # noqa: E402
+from pitwaller.experimental.decisions import (  # noqa: E402
     EFFORT,
     EFFORT_ORDER,
     Action as A,
@@ -172,7 +172,7 @@ def test_effort_tier_increases_with_cost():
             if EFFORT[a].tier is EFFORT[b].tier:
                 continue
             if EFFORT_ORDER.index(EFFORT[a].tier) < EFFORT_ORDER.index(EFFORT[b].tier):
-                from pitwaller.decisions import _COST
+                from pitwaller.experimental.decisions import _COST
                 assert _COST[a] < _COST[b]
 
 
@@ -214,7 +214,7 @@ def test_group_by_effort_orders_light_to_heavy():
 
 
 # ----------------------------------------------------- CI-gated threshold rule
-from pitwaller.decisions import ThresholdDriftSignal  # noqa: E402
+from pitwaller.experimental.decisions import ThresholdDriftSignal  # noqa: E402
 
 
 def test_threshold_drift_significant_when_current_outside_ci():

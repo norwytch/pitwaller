@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pitwaller.bn_recal import (
+from pitwaller.experimental.bn_recal import (
     bn_shift_report,
     feature_stats,
     gaussian_2wasserstein,

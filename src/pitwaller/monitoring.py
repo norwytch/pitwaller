@@ -3,7 +3,7 @@
 Turns a stream of per-prediction records into the aggregate **diagnostics**
 that the remediation policy consumes. This is the layer that watches the model
 in production and decides *what is wrong*, separately from *what to do about it*
-(that's :mod:`pitwaller.decisions`).
+(that's :mod:`pitwaller.experimental.decisions`).
 
 A ``PredictionRecord`` is what you log per inference. Ground truth is optional
 because most of it arrives late (or never); the diagnostics degrade gracefully

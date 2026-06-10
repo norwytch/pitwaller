@@ -163,7 +163,7 @@ def risk_targeted_threshold(
     With ``delta=None`` the *empirical* selective risk is used and the cut is the
     one giving the **largest** accepted set whose selective risk is at or below
     target -- the maximum-coverage operating point (cf.
-    :func:`pitwaller.calibration.coverage_at_risk`). Empirical selective risk is
+    :func:`pitwaller.experimental.calibration.coverage_at_risk`). Empirical selective risk is
     noisy at low coverage, so "largest set under target" is used rather than
     "first prefix to break target", which a single early error would truncate.
 

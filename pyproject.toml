@@ -31,6 +31,10 @@ clip = ["open_clip_torch>=2.20", "torch>=2.0"]
 # Class-imbalance remediation (ADASYN). The policy *recommends* this; install
 # it only if you wire the action up to an actual rebalancing job.
 rebalance = ["imbalanced-learn>=0.11"]
+# Text embedder for the near-OOD benchmark (examples/benchmark_text_ood.py).
+# Pulls in torch via sentence-transformers. Capped to the transformers 4.x line
+# so it works on torch < 2.4 (e.g. the 2.2.x ceiling on Intel macOS).
+text = ["sentence-transformers>=2.2,<4", "transformers>=4.41,<5", "datasets>=2.0"]
 dev = ["pytest>=7", "ruff>=0.1"]
 
 [project.urls]

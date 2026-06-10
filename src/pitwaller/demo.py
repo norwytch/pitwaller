@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from .confidence import Tier
-from .decisions import PolicyThresholds, group_by_effort, heaviest_tier, recommend
+from .experimental.decisions import PolicyThresholds, group_by_effort, heaviest_tier, recommend
 from .embeddings import MockEmbedder
 from .monitoring import PredictionRecord, aggregate
 from .pipeline import ConfidencePipeline

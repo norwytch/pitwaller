@@ -193,3 +193,38 @@ class CLIPEmbedder:
         with torch.no_grad():
             feats = self.model.encode_image(x).cpu().numpy()
         return l2_normalize(feats)  # CLIP features are used on the unit sphere
+
+
+class SentenceTransformerEmbedder:
+    """Text features from a Sentence-Transformers model (e.g. ``all-MiniLM-L6-v2``).
+
+    Turns raw strings into dense semantic vectors -- the substrate the OOD stack
+    scores novelty in for text. Like :class:`CLIPEmbedder` this is a broad
+    foundation embedding (strong for detecting novel *content*), not one model's
+    task features; see "Choosing the embedding" in the README.
+
+    Requires ``sentence-transformers`` (``pip install 'pitwaller[text]'``), which
+    pulls in torch. Imported lazily so the core stays dependency-light.
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2", device: str = "cpu"):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:  # pragma: no cover - exercised only with extras
+            raise ImportError(
+                "SentenceTransformerEmbedder needs sentence-transformers. Install with "
+                "`pip install 'pitwaller[text]'`."
+            ) from exc
+        self.model = SentenceTransformer(model_name, device=device)
+        self._dim = int(self.model.get_sentence_embedding_dimension())
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed(self, batch) -> np.ndarray:
+        """``batch`` is an iterable of strings."""
+        feats = self.model.encode(
+            list(batch), convert_to_numpy=True, show_progress_bar=False
+        ).astype(np.float32)
+        return l2_normalize(feats)  # used on the unit sphere, like CLIP

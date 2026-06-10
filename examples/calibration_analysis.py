@@ -11,7 +11,9 @@ Shows, on synthetic-but-real kNN OOD distances:
 
 import numpy as np
 
-from pitwaller import (
+from pitwaller.embeddings import MockEmbedder
+from pitwaller.experimental import (
+    Action,
     ThresholdDriftSignal,
     aurc,
     conformal_threshold,
@@ -22,8 +24,6 @@ from pitwaller import (
     recommend,
     youden_j_threshold,
 )
-from pitwaller.decisions import Action
-from pitwaller.embeddings import MockEmbedder
 from pitwaller.monitoring import Diagnostics
 from pitwaller.ood import OODModel
 

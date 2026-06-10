@@ -5,7 +5,7 @@ Two independent OOD signals are folded into a single operational tier:
 * ``dist_concern`` -- the kNN distance left the dense core (band != "core").
 * ``if_outlier``   -- the Isolation Forest flagged the sample.
 
-The original rule, stated faithfully:
+The tiering rule:
 
 * **HIGH** -- in the centre 50th percentile **and** not an IF outlier.
   (both detectors agree the sample is in-distribution)
@@ -14,12 +14,12 @@ The original rule, stated faithfully:
 * **LOW**  -- an IF outlier **and** outside the core.
   (both detectors are concerned)
 
-One honest gap in the original spec: it never says what happens to points
-beyond the 90th percentile when the Isolation Forest *doesn't* fire. Under the
-literal rule those land in MED, which feels too generous for the sparsest
-region of feature space. ``strict_outlier=True`` (the recommended default)
-treats the ``"outlier"`` band as automatically LOW. Set it False to reproduce
-the original behaviour exactly.
+One honest gap in the literal rule: it never says what happens to points
+beyond the 90th percentile when the Isolation Forest *doesn't* fire. Taken
+literally those land in MED, which feels too generous for the sparsest region
+of feature space. ``strict_outlier=True`` (the recommended default) treats the
+``"outlier"`` band as automatically LOW. Set it False to reproduce the literal
+rule exactly.
 
 The mapping is pure and table-driven so it is trivially unit-testable and the
 policy is auditable -- no hidden thresholds live here, they live in

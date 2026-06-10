@@ -10,8 +10,8 @@ from pitwaller import (
     MockEmbedder,
     PredictionRecord,
     aggregate,
-    recommend,
 )
+from pitwaller.experimental import recommend
 
 rng = np.random.default_rng(0)
 embedder = MockEmbedder(dim=64, n_clusters=8, seed=1)
