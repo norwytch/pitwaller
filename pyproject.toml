@@ -31,7 +31,7 @@ clip = ["open_clip_torch>=2.20", "torch>=2.0"]
 # Class-imbalance remediation (ADASYN). The policy *recommends* this; install
 # it only if you wire the action up to an actual rebalancing job.
 rebalance = ["imbalanced-learn>=0.11"]
-dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.1"]
+dev = ["pytest>=7", "ruff>=0.1"]
 
 [project.urls]
 Homepage = "https://github.com/norwytch/pitwaller"
@@ -46,10 +46,3 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-
-[tool.coverage.run]
-source = ["pitwaller"]
-branch = true
-
-[tool.coverage.report]
-show_missing = true

@@ -1,7 +1,6 @@
 # pitwaller
 
 [![CI](https://github.com/norwytch/pitwaller/actions/workflows/ci.yml/badge.svg)](https://github.com/norwytch/pitwaller/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/norwytch/pitwaller/graph/badge.svg)](https://codecov.io/gh/norwytch/pitwaller)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
