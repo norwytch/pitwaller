@@ -1,5 +1,11 @@
 # pitwaller
 
+[![CI](https://github.com/norwytch/pitwaller/actions/workflows/ci.yml/badge.svg)](https://github.com/norwytch/pitwaller/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/norwytch/pitwaller/graph/badge.svg)](https://codecov.io/gh/norwytch/pitwaller)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 **Embedding-space out-of-distribution detection, confidence tiering, and automated QA for image classifiers.**
 
 Given an image classifier, its training dataset, and a production dataset, determine which data in the production dataset are OOD relative to the training dataset, and assign confidence scores based on OOD distance. Recommend remedial actions for the model based on model drift. Depends on certain assumptions about use case and distribution as detailed in [Limitations](#limitations--when-to-use-this). 
