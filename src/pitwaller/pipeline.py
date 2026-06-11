@@ -107,6 +107,18 @@ class ConfidencePipeline:
             return [ScoredSample(r, t) for r, t in zip(results, tiers)]
         return [ScoredSample(r, tier_for(r, self.strict_outlier)) for r in results]
 
+    def neighbors(self, inputs, k: int = 5):
+        """Nearest training examples to each input, as ``(distances, indices)``.
+
+        The same FAISS index that scores OOD-ness also retrieves: the indices
+        point into the fitted training set, so a LOW/OOD flag can be explained by
+        the training items the input is closest to. See :mod:`pitwaller.retrieval`
+        for full similarity search (dense / BM25 / hybrid) and retrieval metrics.
+        """
+        if not self._fitted:
+            raise RuntimeError("pipeline not fitted; call fit() first")
+        return self.ood.index.search(self._to_features(inputs), k)
+
     def _to_features(self, inputs) -> np.ndarray:
         if isinstance(inputs, np.ndarray) and inputs.ndim == 2:
             return inputs.astype(np.float32)

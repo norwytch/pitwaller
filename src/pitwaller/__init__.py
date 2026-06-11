@@ -17,6 +17,13 @@ from .index import HNSWConfig, VectorIndex
 from .monitoring import Diagnostics, PredictionRecord, aggregate
 from .ood import OODModel, OODResult
 from .pipeline import ConfidencePipeline, ScoredSample
+from .retrieval import (
+    BM25Retriever,
+    DenseRetriever,
+    HybridRetriever,
+    evaluate_retrieval,
+    reciprocal_rank_fusion,
+)
 from .tier_calibration import (
     ReliabilityModel,
     TierCalibration,
@@ -48,4 +55,9 @@ __all__ = [
     "Diagnostics",
     "PredictionRecord",
     "aggregate",
+    "DenseRetriever",
+    "BM25Retriever",
+    "HybridRetriever",
+    "evaluate_retrieval",
+    "reciprocal_rank_fusion",
 ]

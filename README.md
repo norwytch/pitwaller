@@ -232,6 +232,38 @@ For a runnable version on synthetic data (no weights or dataset required), see [
 
 ---
 
+## Retrieval
+
+The OOD detector already indexes the training embeddings for kNN search, so the same machinery is a similarity-search engine. `retrieval.py` surfaces it as three retrievers plus the standard IR metrics:
+
+- `DenseRetriever` — embedding ANN over the FAISS HNSW index (numpy fallback).
+- `BM25Retriever` — Okapi BM25 on a scikit-learn tokenizer (no extra dependency).
+- `HybridRetriever` — the two fused by reciprocal rank fusion (rank-only, so dense distances and BM25 scores never need a common scale).
+
+On 20 Newsgroups (2,000 docs indexed, 500 held-out queries, relevant = same newsgroup):
+
+```
+retriever          precision@10    MAP    MRR
+dense (MiniLM)            0.80     0.75   0.91
+BM25 (sparse)            0.56     0.46   0.81
+hybrid (RRF)             0.75     0.70   0.90
+```
+
+Dense wins here: with strong embeddings on a topic task BM25 is the weaker signal, and equal-weight fusion pulls the result toward it. Hybrid pays off when the two are complementary (rare keywords, exact-match, out-of-vocabulary terms), not when one retriever dominates. (recall@10 is ~0.02 for all three and omitted — each query has ~330 relevant docs, so the top 10 can only recover a few percent; precision@k / MAP / MRR are the informative metrics here.)
+
+```python
+from pitwaller.embeddings import SentenceTransformerEmbedder
+from pitwaller.retrieval import BM25Retriever, DenseRetriever, HybridRetriever, evaluate_retrieval
+
+dense = DenseRetriever(SentenceTransformerEmbedder()).index(corpus, labels=labels)
+hybrid = HybridRetriever(dense, BM25Retriever().index(corpus, labels=labels))
+print(evaluate_retrieval(hybrid, queries, query_labels, labels, k=10))
+```
+
+The same index also explains OOD flags: `pipeline.neighbors(inputs, k)` returns each input's nearest training examples, so a LOW-tier flag arrives with the training items it sits closest to. Reproduce the table with `python examples/benchmark_retrieval.py`.
+
+---
+
 ## Project layout
 
 ```
@@ -241,6 +273,7 @@ src/pitwaller/                 # validated core: OOD detection + confidence tier
   ood.py          kNN-distance + Isolation Forest, percentile thresholds
   confidence.py   default HIGH / MED / LOW tiering from the OOD signals (label-free)
   tier_calibration.py  opt-in tier upgrade: reliability map + risk-targeted cuts (needs labels)
+  retrieval.py    dense / BM25 / hybrid search over the index + recall@k / MAP eval
   monitoring.py   aggregate predictions -> diagnostics
   pipeline.py     end-to-end orchestration
   demo.py         runnable synthetic walkthrough
@@ -248,9 +281,9 @@ src/pitwaller/                 # validated core: OOD detection + confidence tier
     decisions.py    remediation policy engine (heuristic, CNN-oriented, no feedback loop)
     bn_recal.py     BatchNorm recal: 2-Wasserstein shift test, AdaBN, McNemar
     calibration.py  single-threshold toolkit: conformal, risk-coverage/AURC, cost/constraint
-tests/            101 tests across every component
-examples/         quickstart.py, calibration_analysis.py,
-                  benchmark_covariate_shift.py, benchmark_text_ood.py
+tests/            108 tests across every component
+examples/         quickstart.py, calibration_analysis.py, benchmark_covariate_shift.py,
+                  benchmark_text_ood.py, benchmark_retrieval.py
 ```
 
 ## Limitations & when to use this
@@ -283,7 +316,7 @@ pip install -e .              # core: numpy, scikit-learn, faiss-cpu
 pip install -e '.[torch]'     # + EfficientNet-B4 / CLIP image features
 pip install -e '.[text]'      # + sentence-transformer features and the benchmarks
 pip install -e '.[dev]'       # + pytest, ruff
-pytest                        # 101 tests
+pytest                        # 108 tests
 ```
 
 > macOS note: the benchmarks set a few OpenMP env vars at the top of each file to avoid a known faiss/torch segfault when both load in one process. See the file headers.
