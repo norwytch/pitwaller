@@ -19,7 +19,12 @@ from pitwaller.experimental.calibration import (
     coverage_at_risk,
     weighted_conformal_threshold,
 )
-from pitwaller.tier_calibration import risk_targeted_threshold
+from pitwaller.confidence import Tier
+from pitwaller.tier_calibration import (
+    ReliabilityModel,
+    TierCalibrator,
+    risk_targeted_threshold,
+)
 
 
 # --------------------------------------------------------------- conformal coverage
@@ -116,3 +121,56 @@ def test_gaussian_2wasserstein_known_value():
 def test_symmetric_kl_zero_for_identical_gaussians():
     kl = symmetric_kl_gaussian([1.0, 2.0], [1.0, 3.0], [1.0, 2.0], [1.0, 3.0])
     assert kl == pytest.approx(0.0, abs=1e-9)
+
+
+# ----------------------------- end-to-end TierCalibrator guarantee (held-out)
+
+
+def _reliability_data(n, d, seed, coef=1.5):
+    """Features where only column 0 carries signal; the rest are noise."""
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, d))
+    p = 1.0 / (1.0 + np.exp(-coef * X[:, 0]))
+    return X, rng.random(n) < p
+
+
+def test_calibrator_certifies_high_risk_out_of_sample():
+    """The fit -> certify path must control HIGH risk on *held-out* data, not just
+    the fold it was fit on. With sample-splitting the delta guarantee transfers:
+    out-of-sample HIGH risk should exceed the target in at most delta of runs."""
+    target, delta = 0.2, 0.2
+    violations = trials_with_high = 0
+    for t in range(40):
+        x_cal, y_cal = _reliability_data(800, 6, 2 * t)
+        cal = TierCalibrator(risk_high=target, risk_med=0.5, delta=delta).fit(x_cal, y_cal, seed=t)
+        x_test, y_test = _reliability_data(4000, 6, 2 * t + 1)
+        high = np.array([tier is Tier.HIGH for tier in cal.tier(x_test)])
+        if high.sum() >= 20:
+            trials_with_high += 1
+            violations += (1.0 - y_test[high].mean()) > target
+    assert trials_with_high >= 20
+    assert violations / trials_with_high <= delta
+
+
+def test_same_data_certification_is_optimistic_split_is_not():
+    """Certifying the cut on the same data the reliability map was fit on (the bug
+    this guards) underestimates out-of-sample risk; sample-splitting does not.
+    With a flexible map on noisy features the gap is clear. Deterministic."""
+    target = 0.15
+    naive_risk, split_risk = [], []
+    for t in range(30):
+        x_cal, y_cal = _reliability_data(180, 24, 2 * t)  # small n, mostly noise -> overfits
+        x_test, y_test = _reliability_data(5000, 24, 2 * t + 1)
+        # naive: fit map AND place the empirical cut on the same data
+        rel = ReliabilityModel().fit(x_cal, y_cal)
+        tau = risk_targeted_threshold(rel.predict(x_cal), y_cal, target, None)
+        hi = rel.predict(x_test) >= tau
+        if hi.any():
+            naive_risk.append(1.0 - y_test[hi].mean())
+        # split: TierCalibrator certifies on a disjoint fold
+        cal = TierCalibrator(risk_high=target, risk_med=0.6).fit(x_cal, y_cal, seed=t)
+        hi2 = np.array([tier is Tier.HIGH for tier in cal.tier(x_test)])
+        if hi2.any():
+            split_risk.append(1.0 - y_test[hi2].mean())
+    assert np.mean(naive_risk) > np.mean(split_risk)  # same-data is optimistic
+    assert np.mean(split_risk) <= target + 0.08       # split controls out-of-sample risk

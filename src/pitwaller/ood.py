@@ -34,6 +34,23 @@ from sklearn.ensemble import IsolationForest
 from .index import HNSWConfig, VectorIndex
 
 
+def _knn_excluding_self(dist: np.ndarray, idx: np.ndarray, k: int) -> np.ndarray:
+    """Mean distance to each row's ``k`` nearest *non-self* neighbours.
+
+    ``dist`` / ``idx`` are an ``(n, >=k+1)`` self-query result. The self point is
+    excluded by *id* (row position), not by column 0: an approximate index (FAISS
+    HNSW) does not guarantee the self point is the column-0 hit, so a blind
+    column drop would discard a genuine neighbour on a recall miss. Masking the
+    self id to ``+inf`` and re-sorting takes the ``k`` nearest non-self neighbours
+    whether or not self was retrieved, while keeping a true duplicate at
+    distance 0.
+    """
+    n = dist.shape[0]
+    masked = np.where(idx == np.arange(n)[:, None], np.inf, np.asarray(dist, dtype=float))
+    masked.sort(axis=1)
+    return masked[:, :k].mean(axis=1)
+
+
 @dataclass
 class OODResult:
     """Per-sample OOD readout.
@@ -96,10 +113,10 @@ class OODModel:
 
         self.index = VectorIndex(dim, self.index_config, self.index_backend).build(X_train)
 
-        # Self-distance: query k+1 and drop the point itself (the nearest
-        # neighbour of a training point in its own index is itself, distance 0).
-        dist, _ = self.index.search(X_train, self.k + 1)
-        train_scores = dist[:, 1:].mean(axis=1)
+        # Calibrate the distance bands on the training set's own kNN distances,
+        # excluding each point's self-match by id (see _knn_excluding_self).
+        dist, idx = self.index.search(X_train, self.k + 1)
+        train_scores = _knn_excluding_self(dist, idx, self.k)
         self.p50 = float(np.percentile(train_scores, 50))
         self.p90 = float(np.percentile(train_scores, 90))
 

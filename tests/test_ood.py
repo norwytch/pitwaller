@@ -1,7 +1,27 @@
 import numpy as np
+import pytest
 
 from pitwaller.embeddings import MockEmbedder
-from pitwaller.ood import OODModel
+from pitwaller.ood import OODModel, _knn_excluding_self
+
+
+def test_knn_excluding_self_masks_by_id_not_column():
+    # Self id (0) lands in column 1 at distance 0, as an approximate index can
+    # return it; genuine neighbours are 10 (col 0) and 20 (col 2).
+    out = _knn_excluding_self(np.array([[10.0, 0.0, 20.0]]), np.array([[1, 0, 2]]), k=2)
+    assert out[0] == pytest.approx(15.0)  # (10+20)/2, not (0+20)/2 from a blind col-0 drop
+
+
+def test_knn_excluding_self_exact_case_drops_column_zero():
+    # Self at column 0 (exact index): identical to dropping column 0.
+    out = _knn_excluding_self(np.array([[0.0, 3.0, 5.0]]), np.array([[0, 4, 7]]), k=2)
+    assert out[0] == pytest.approx(4.0)  # (3+5)/2
+
+
+def test_knn_excluding_self_keeps_true_duplicate_at_zero():
+    # A genuine duplicate (different id) at distance 0 is a real neighbour, kept.
+    out = _knn_excluding_self(np.array([[0.0, 0.0, 4.0]]), np.array([[0, 5, 2]]), k=2)
+    assert out[0] == pytest.approx(2.0)  # self (id 0) masked; dup 0 and 4 kept
 
 
 def _train_features(embedder, n=1500, seed=0):

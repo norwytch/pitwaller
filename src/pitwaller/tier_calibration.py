@@ -20,10 +20,13 @@ actually promise, in two composed steps:
 2. **Place the tier cuts at risk targets on that score.** HIGH is the most
    confident band whose *selective risk* (error rate among accepted samples)
    stays under ``risk_high`` (default 1%), MED under ``risk_med`` (default 5%),
-   everything else LOW. With ``delta`` set, each cut carries a finite-sample
-   guarantee: a Hoeffding upper bound on the risk is tested down a nested
-   sequence of thresholds (fixed-sequence / Learn-then-Test), so "HIGH" really
-   means "certified <= risk_high error" rather than "happened to look good".
+   everything else LOW. The reliability map is fit on one data split and the cuts
+   are certified on a *disjoint* one (sample-splitting), so the score is
+   independent of the data it is certified against. With ``delta`` set, each cut
+   then carries a finite-sample guarantee: a Hoeffding upper bound on the
+   held-out risk is tested down a nested sequence of thresholds (fixed-sequence /
+   Learn-then-Test), so "HIGH" really means "certified <= risk_high error
+   out-of-sample" rather than "happened to look good on the training fold".
 
 The honest cost: every option here needs labels, which is exactly why the
 percentile default exists. :class:`~pitwaller.pipeline.ConfidencePipeline` keeps
@@ -168,12 +171,22 @@ def risk_targeted_threshold(
     noisy at low coverage, so "largest set under target" is used rather than
     "first prefix to break target", which a single early error would truncate.
 
-    With ``delta`` set, a Hoeffding upper confidence bound at level ``delta`` is
-    used and thresholds are tested down the nested sequence, stopping at the
-    first violation (RCPS / fixed-sequence Learn-then-Test). The returned cut
-    then controls the true risk with probability ``>= 1 - delta`` -- at the price
-    of needing enough calibration points to certify a small risk (a handful
-    can't, and the cut degenerates to ``+inf`` = "nothing qualifies").
+    With ``delta`` set, the empirical risk is replaced by a Hoeffding upper
+    confidence bound at level ``delta`` and the same largest-set rule is applied
+    (RCPS-style). The bound is wide for a tiny accept set and tightens as the set
+    grows, so the certified set sits in the middle of the ordering, not at the
+    single most-confident point. For the bound to transfer out-of-sample the
+    ``confidence`` must come from a scorer fit on data *independent* of
+    ``correct`` -- :class:`TierCalibrator` arranges that by sample-splitting.
+    Controlling the true risk needs enough calibration points; too few and the
+    cut degenerates to ``+inf``.
+
+    Caveat: the bound is pointwise. The threshold is *selected* over the nested
+    family by this same bound and is not Bonferroni/union-corrected for that
+    selection -- the standard RCPS-pointwise operating point, valid in practice
+    under the monotone risk structure, but treat ``delta`` as a per-cut level
+    rather than a hard simultaneous one. A union bound (``ln(n/delta)``) would be
+    fully rigorous at the cost of much more conservative cuts.
 
     ``+inf`` is returned when no accepted set meets the target (empty tier).
     """
@@ -191,23 +204,22 @@ def risk_targeted_threshold(
     emp_risk = 1.0 - np.cumsum(c) / k
 
     if delta is None:
-        # Max-coverage operating point: largest prefix with empirical risk <= target.
-        ok = emp_risk <= target_risk
-        if not ok.any():
-            return float("inf")
-        k_last = int(np.flatnonzero(ok).max()) + 1
-        return float(conf_sorted[k_last - 1])
+        risk = emp_risk  # empirical max-coverage operating point
+    else:
+        if not 0 < delta < 1:
+            raise ValueError("delta must be in (0, 1)")
+        # RCPS-style: certify the risk with a Hoeffding upper confidence bound.
+        # The sqrt term is large for a tiny accept set and shrinks as the set
+        # grows, so the certified region sits in the middle -- not at the single
+        # most-confident point. Take the *largest* accept set whose bound holds
+        # (max coverage), which is the RCPS operating point, not "stop at m=1".
+        risk = emp_risk + np.sqrt(np.log(1.0 / delta) / (2.0 * k))
 
-    # Guaranteed cut: Hoeffding UCB tested down the nested sequence; the prefix is
-    # valid only while the bound has held throughout, so stop at the first break.
-    if not 0 < delta < 1:
-        raise ValueError("delta must be in (0, 1)")
-    bound = emp_risk + np.sqrt(np.log(1.0 / delta) / (2.0 * k))
-    ok = bound <= target_risk
-    if not ok[0]:
-        return float("inf")  # even the single most-confident sample can't be certified
-    first_violation = int(np.argmax(~ok)) if (~ok).any() else ok.size
-    return float(conf_sorted[first_violation - 1])
+    ok = risk <= target_risk
+    if not ok.any():
+        return float("inf")
+    k_last = int(np.flatnonzero(ok).max()) + 1  # largest prefix under target
+    return float(conf_sorted[k_last - 1])
 
 
 # --------------------------------------------------------------------------- #
@@ -252,11 +264,38 @@ class TierCalibrator:
         self.feature_fn = feature_fn
         self.calibration_: TierCalibration | None = None
 
-    def fit(self, features: np.ndarray, correct: np.ndarray) -> "TierCalibrator":
-        rel = ReliabilityModel().fit(features, correct)
-        score = rel.predict(features)
-        tau_high = risk_targeted_threshold(score, correct, self.risk_high, self.delta)
-        tau_med = risk_targeted_threshold(score, correct, self.risk_med, self.delta)
+    def fit(
+        self,
+        features: np.ndarray,
+        correct: np.ndarray,
+        calibration_fraction: float = 0.5,
+        seed: int = 0,
+    ) -> "TierCalibrator":
+        """Fit the reliability map and place the tier cuts.
+
+        The map is fit on one split and the cuts are certified on a *disjoint*
+        one. Reusing the same data for both optimistically biases the risk
+        estimate -- the score is trained to make confident points correct on the
+        exact set the bound is then computed over -- which voids the ``delta``
+        guarantee out-of-sample. Sample-splitting keeps the score independent of
+        the certification data, as RCPS / Learn-then-Test require. (A K-fold
+        cross-fit would use the data more efficiently; this is the simple,
+        unimpeachable version.)
+        """
+        features = np.asarray(features, dtype=float)
+        correct = np.asarray(correct, dtype=bool)
+        n = correct.size
+        if not 0.0 < calibration_fraction < 1.0:
+            raise ValueError("calibration_fraction must be in (0, 1)")
+        perm = np.random.default_rng(seed).permutation(n)
+        n_cal = max(1, min(n - 1, int(round(calibration_fraction * n))))
+        cal_idx, fit_idx = perm[:n_cal], perm[n_cal:]
+
+        rel = ReliabilityModel().fit(features[fit_idx], correct[fit_idx])
+        cal_score = rel.predict(features[cal_idx])  # score is independent of this fold
+        cal_correct = correct[cal_idx]
+        tau_high = risk_targeted_threshold(cal_score, cal_correct, self.risk_high, self.delta)
+        tau_med = risk_targeted_threshold(cal_score, cal_correct, self.risk_med, self.delta)
         # A looser risk budget can never demand a *higher* cut than a tighter one;
         # enforce the nesting so HIGH ⊆ MED even through finite-sample noise.
         tau_med = min(tau_med, tau_high)

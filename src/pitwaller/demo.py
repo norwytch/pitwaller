@@ -98,9 +98,9 @@ def main() -> None:
     # The p50/p90 tiers above are label-free but arbitrary. Given a labelled
     # calibration set, place the HIGH/MED/LOW cuts at *target error rates*.
     cal_specs = (
-        [(int(rng.integers(0, 8)), 0.4) for _ in range(700)]      # core
-        + [(int(rng.integers(0, 8)), 1.6) for _ in range(300)]    # margin
-        + [(99, 0.5) for _ in range(150)]                         # outlier
+        [(int(rng.integers(0, 8)), 0.4) for _ in range(1800)]     # core
+        + [(int(rng.integers(0, 8)), 1.6) for _ in range(800)]    # margin
+        + [(99, 0.5) for _ in range(400)]                         # outlier
     )
     cal_inputs = _make_inputs(cal_specs)
     cal_scored = pipe.score(cal_inputs)  # still p50/p90 here; we only need .ood

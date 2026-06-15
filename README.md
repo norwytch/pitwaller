@@ -121,7 +121,7 @@ The bucketing never contradicts the cost ladder (there's a test for that): a hea
 The p50/p90 cuts answer "how far from training data?", not "how much can I trust this?". Given a labelled calibration set, `tier_calibration.py` sets the tiers by what they promise, in two steps:
 
 1. **Fuse the signals into one reliability score.** A logistic map `[kNN distance, IF score, …] → P(correct)` replaces both the percentile cuts and the AND/OR table with a single ordered score. It uses the continuous Isolation-Forest score (`OODResult.if_score`), not the thresholded flag, so no information is discarded. A reliability diagram and ECE check the fit; the coefficients show how each signal moves reliability.
-2. **Place the cuts at risk targets.** Each cut bounds the selective risk of a cumulative accept set: accept everything tiered HIGH and the error rate stays under `risk_high` (default 1%); accept HIGH+MED and it stays under `risk_med` (default 5%). This is what an operator routes on ("if I auto-accept HIGH, what's my error?"). Pass `delta` for a finite-sample guarantee (a Hoeffding bound tested down a nested threshold sequence, RCPS-style), so HIGH means certified ≤ `risk_high` error. With `delta=None` the empirical cut holds in-sample, with the usual out-of-sample slack.
+2. **Place the cuts at risk targets.** Each cut bounds the selective risk of a cumulative accept set: accept everything tiered HIGH and the error rate stays under `risk_high` (default 1%); accept HIGH+MED and it stays under `risk_med` (default 5%). This is what an operator routes on ("if I auto-accept HIGH, what's my error?"). The map is fit on one data split and the cut certified on a *disjoint* one, so the score is independent of the data it is certified against — without that sample-split the guarantee would leak (the score is trained to make confident points correct on the very set the bound is computed over). Pass `delta` for a finite-sample guarantee: the cut is the largest accept set whose held-out risk clears a Hoeffding bound at level `delta` (RCPS-style), so HIGH means certified ≤ `risk_high` error out-of-sample. With `delta=None` you get the empirical max-coverage cut on the held-out split.
 
 It's opt-in: the pipeline uses p50/p90 until you call `calibrate`:
 
@@ -131,7 +131,7 @@ pipe.calibrate(cal_inputs, cal_correct, risk_high=0.01, risk_med=0.05)  # -> ris
 scored = pipe.score(prod_inputs)                             # HIGH now means "<=1% error"
 ```
 
-`python -m pitwaller.demo` illustrates the mechanic on synthetic data: p50/p90 calls 88 samples HIGH, risk-targeting keeps the 13 that clear a 5% bar, and HIGH+MED (74% coverage) realises 14% error against a 15% target.
+`python -m pitwaller.demo` illustrates the mechanic on synthetic data: p50/p90 calls 88 samples HIGH, risk-targeting keeps the 25 that clear a 5% bar, and HIGH+MED (67% coverage) realises 11% error against a 15% target.
 
 ---
 
@@ -281,7 +281,7 @@ src/pitwaller/                 # validated core: OOD detection + confidence tier
     decisions.py    remediation policy engine (heuristic, CNN-oriented, no feedback loop)
     bn_recal.py     BatchNorm recal: 2-Wasserstein shift test, AdaBN, McNemar
     calibration.py  single-threshold toolkit: conformal, risk-coverage/AURC, cost/constraint
-tests/            108 tests across every component
+tests/            113 tests across every component
 examples/         quickstart.py, calibration_analysis.py, benchmark_covariate_shift.py,
                   benchmark_text_ood.py, benchmark_retrieval.py
 ```
@@ -316,7 +316,7 @@ pip install -e .              # core: numpy, scikit-learn, faiss-cpu
 pip install -e '.[torch]'     # + EfficientNet-B4 / CLIP image features
 pip install -e '.[text]'      # + sentence-transformer features and the benchmarks
 pip install -e '.[dev]'       # + pytest, ruff
-pytest                        # 108 tests
+pytest                        # 113 tests
 ```
 
 > macOS note: the benchmarks set a few OpenMP env vars at the top of each file to avoid a known faiss/torch segfault when both load in one process. See the file headers.
