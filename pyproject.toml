@@ -34,7 +34,7 @@ rebalance = ["imbalanced-learn>=0.11"]
 # Text embedder for the near-OOD benchmark (examples/benchmark_text_ood.py).
 # Pulls in torch via sentence-transformers. Capped to the transformers 4.x line
 # so it works on torch < 2.4 (e.g. the 2.2.x ceiling on Intel macOS).
-text = ["sentence-transformers>=2.2,<4", "transformers>=4.41,<5", "datasets>=2.0"]
+text = ["sentence-transformers>=2.2,<4", "transformers>=4.41,<6", "datasets>=2.0"]
 dev = ["pytest>=7", "ruff>=0.1"]
 
 [project.urls]
