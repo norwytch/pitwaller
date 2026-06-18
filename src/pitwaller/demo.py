@@ -1,11 +1,10 @@
-"""End-to-end demo on synthetic data -- runs with no weights, no dataset.
+"""End-to-end demo on synthetic data. No weights or dataset needed.
 
     python -m pitwaller.demo
 
-Walks through the whole system: fit the OOD reference model on a synthetic
-"training manifold", score a production batch that deliberately includes
-in-distribution, margin, and out-of-distribution samples, tier them, aggregate
-into diagnostics, and print the remediation recommendation.
+Fits the OOD reference model, scores a production batch with in-distribution,
+margin, and OOD samples, tiers them, aggregates into diagnostics, and prints
+the remediation recommendation.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ def main() -> None:
     rng = np.random.default_rng(42)
     embedder = MockEmbedder(dim=64, n_clusters=8, seed=1)
 
-    # --- Training set: tight samples drawn from the 8 known clusters ----------
+    # Training set: tight samples from the 8 known clusters.
     train_specs = [(int(rng.integers(0, 8)), 0.4) for _ in range(2000)]
     train_inputs = _make_inputs(train_specs)
 
@@ -36,7 +35,7 @@ def main() -> None:
     print(f"Fitted OOD model on {len(train_inputs)} samples "
           f"(p50={pipe.ood.p50:.4f}, p90={pipe.ood.p90:.4f})\n")
 
-    # --- Production batch: mostly in-distribution + a slug of drift/OOD -------
+    # Production batch: mostly in-distribution plus some drift/OOD.
     prod_specs = (
         [(int(rng.integers(0, 8)), 0.4) for _ in range(140)]    # core
         + [(int(rng.integers(0, 8)), 1.6) for _ in range(40)]   # margin (noisy)
@@ -53,14 +52,13 @@ def main() -> None:
         print(f"  {t.value:<4} {counts[t]:>3}  ({counts[t] / len(scored):.0%})")
     print()
 
-    # --- Synthesise records with labels: accuracy degrades with OOD distance --
+    # Synthesise labelled records; accuracy degrades with OOD distance.
     P_CORRECT = {"core": 0.97, "margin": 0.80, "outlier": 0.45}
     records = []
     prod_correct = []
     for spec, s in zip(prod_specs, scored):
         cluster_id = spec[0]
-        # In-distribution predictions are usually right; OOD ones often wrong --
-        # this is the monotonic OOD-vs-accuracy relationship the system exploits.
+        # In-distribution predictions are usually right, OOD ones often wrong.
         true_label = cluster_id if 0 <= cluster_id < 8 else int(rng.integers(0, 8))
         correct = rng.random() < P_CORRECT[s.ood.band]
         pred_label = true_label if correct else (true_label + 1) % 8
@@ -94,9 +92,8 @@ def main() -> None:
                   f"gpu:{e.gpu_intensity}, {labels}, {live})")
             print(f"      {r.rationale}")
 
-    # --- Label-calibrated tiers: cuts defined by error rate, not distance -----
-    # The p50/p90 tiers above are label-free but arbitrary. Given a labelled
-    # calibration set, place the HIGH/MED/LOW cuts at *target error rates*.
+    # Label-calibrated tiers: place HIGH/MED/LOW cuts at target error rates
+    # using a labelled calibration set, rather than at the label-free p50/p90.
     cal_specs = (
         [(int(rng.integers(0, 8)), 0.4) for _ in range(1800)]     # core
         + [(int(rng.integers(0, 8)), 1.6) for _ in range(800)]    # margin
@@ -116,9 +113,8 @@ def main() -> None:
     print(f"  p50/p90 marked {counts[Tier.HIGH]} HIGH; risk-targeting re-tiers "
           "the same batch by tolerated error.")
 
-    # Re-tier the same production batch. The risk targets bound the *cumulative*
-    # accepted set (accept everything at least this confident), so report it the
-    # way an operator routes on it: accept HIGH, then accept HIGH+MED.
+    # Re-tier the same batch. Risk targets bound the cumulative accepted set, so
+    # report it as an operator routes: accept HIGH, then accept HIGH+MED.
     recal = pipe.score(prod_inputs)
     tiers = [s.tier for s in recal]
     n = len(tiers)

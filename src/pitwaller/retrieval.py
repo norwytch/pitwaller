@@ -1,20 +1,17 @@
 """Embedding-based retrieval over the same vector index the OOD detector uses.
 
-The OOD core already builds a FAISS HNSW index over training embeddings and runs
-kNN search against it. This module surfaces that as similarity search and adds a
-sparse (BM25) retriever, a hybrid fusion of the two, and the standard retrieval
-metrics (recall@k, precision@k, MAP, MRR).
+Surfaces the OOD core's FAISS HNSW index as similarity search and adds a sparse
+(BM25) retriever, a hybrid fusion of the two, and retrieval metrics (recall@k,
+precision@k, MAP, MRR).
 
-* Dense retrieval reuses :class:`~pitwaller.index.VectorIndex` (FAISS HNSW, with a
-  numpy brute-force fallback).
-* BM25 is Okapi BM25 implemented on a scikit-learn ``CountVectorizer`` -- no extra
-  dependency.
+* Dense retrieval reuses :class:`~pitwaller.index.VectorIndex` (FAISS HNSW, numpy
+  brute-force fallback).
+* BM25 is Okapi BM25 on a scikit-learn ``CountVectorizer``.
 * Hybrid fuses the two ranked lists by reciprocal rank fusion (Cormack et al.,
-  2009), which needs only the ranks, so dense distances and BM25 scores never
-  have to be put on a common scale.
+  2009), which uses only ranks, so dense distances and BM25 scores need no common
+  scale.
 
-Relevance for evaluation is by label: a retrieved item is relevant to a query
-when they share a label (e.g. same class / category).
+For evaluation, a retrieved item is relevant to a query when they share a label.
 """
 
 from __future__ import annotations
@@ -66,9 +63,8 @@ def reciprocal_rank(relevance: np.ndarray) -> float:
 class DenseRetriever:
     """Embedding similarity search backed by :class:`VectorIndex` (FAISS HNSW).
 
-    ``embedder`` turns items into vectors. :meth:`index` embeds and indexes a
-    corpus; :meth:`retrieve` returns, per query, the ranked corpus indices of its
-    nearest neighbours.
+    :meth:`index` embeds and indexes a corpus; :meth:`retrieve` returns, per
+    query, the ranked corpus indices of its nearest neighbours.
     """
 
     def __init__(self, embedder, index_config: HNSWConfig | None = None, index_backend: str = "auto"):
@@ -168,8 +164,8 @@ class HybridRetriever:
 def evaluate_retrieval(retriever, queries, query_labels, corpus_labels, k: int = 10) -> dict[str, float]:
     """Mean recall@k / precision@k / MAP / MRR over ``queries``.
 
-    An item is relevant to a query when ``corpus_labels[item] == query_label``.
-    Queries should be held out of the indexed corpus.
+    An item is relevant when ``corpus_labels[item] == query_label``. Queries
+    should be held out of the indexed corpus.
     """
     corpus_labels = np.asarray(corpus_labels)
     ranked = retriever.retrieve(queries, k)

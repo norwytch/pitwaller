@@ -1,20 +1,18 @@
-"""Illustrative / standalone components, off the validated core path.
+"""Illustrative, standalone components, off the validated core path.
 
-The validated core of pitwaller is embedding-space OOD detection and confidence
-tiering (``ood``, ``confidence``, ``tier_calibration``, ``pipeline``, backed by
-``embeddings``/``index``/``monitoring``). These modules sit alongside it but are
-*not* required by it, and are not validated end-to-end:
+The core of pitwaller is embedding-space OOD detection and confidence tiering
+(``ood``, ``confidence``, ``tier_calibration``, ``pipeline``). These modules sit
+alongside it, are not required by it, and are not validated end-to-end:
 
-* ``decisions``   -- the remediation policy engine. A transparent, heuristic
-  if-ladder mapping diagnostics to corrective actions. CNN-oriented (BatchNorm
-  recal, backbone retrain), correlational, with no outcome feedback loop. Treat
-  its output as a ranked suggestion for a human, not an autopilot.
-* ``bn_recal``    -- BatchNorm recalibration (justify with a 2-Wasserstein shift
-  test, AdaBN, validate with McNemar). The statistics are tested; the two
-  functions that touch a live model are CNN-specific integration points.
-* ``calibration`` -- a self-contained toolkit for picking/evaluating a single
-  threshold (conformal bounds, risk-coverage/AURC, cost/constraint operating
-  points, bootstrap CIs). Useful on its own; the core pipeline does not call it.
+* ``decisions``: heuristic remediation policy mapping diagnostics to corrective
+  actions. CNN-oriented, correlational, with no outcome feedback loop. Treat its
+  output as a ranked suggestion for a human, not an autopilot.
+* ``bn_recal``: BatchNorm recalibration. 2-Wasserstein shift test, AdaBN,
+  McNemar validation. Statistics are tested; the two functions touching a live
+  model are CNN-specific integration points.
+* ``calibration``: toolkit for picking/evaluating one threshold (conformal
+  bounds, risk-coverage/AURC, cost/constraint operating points, bootstrap CIs).
+  The core pipeline does not call it.
 
 Import explicitly, e.g. ``from pitwaller.experimental import recommend``.
 """

@@ -1,14 +1,9 @@
 """Approximate nearest-neighbour index over the training feature space.
 
-We use a FAISS HNSW graph for kNN. HNSW is the right tool here: the reference
-set is the *entire training embedding set* (often millions of vectors), queries
-happen online in production, and we only need approximate neighbours to
-estimate a local-density / distance score. HNSW gives logarithmic query time
-with recall high enough that the OOD percentile thresholds are stable.
-
-A pure-numpy brute-force backend is included so the package runs (and the tests
-pass) even where FAISS is unavailable, and so small inputs don't pay graph
-build cost. The two backends expose an identical interface.
+Uses a FAISS HNSW graph for kNN: logarithmic query time over the full training
+embedding set, with recall high enough to keep the OOD percentile thresholds
+stable. A pure-numpy brute-force backend with an identical interface is included
+as a fallback when FAISS is unavailable. Both return squared-L2 distances.
 """
 
 from __future__ import annotations
@@ -37,8 +32,7 @@ class HNSWConfig:
     """HNSW build/search parameters.
 
     ``M`` is the graph degree, ``ef_construction`` the build-time beam width,
-    ``ef_search`` the query-time beam width (recall/latency knob). The defaults
-    are sane for tens-of-thousands to millions of 64-2048-d vectors.
+    ``ef_search`` the query-time beam width (the recall/latency knob).
     """
 
     M: int = 32

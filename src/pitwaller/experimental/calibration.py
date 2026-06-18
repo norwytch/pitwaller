@@ -1,38 +1,33 @@
-"""Statistically grounded threshold selection and confidence evaluation.
+"""Threshold selection and confidence evaluation with explicit guarantees.
 
-This module replaces eyeballed percentile cut-points (the p50/p90 in
-:mod:`pitwaller.ood`) and the equal-cost Youden's-J operating point with tools that
-come with explicit guarantees or explicit cost/constraint semantics:
+Alternatives to eyeballed percentile cut-points and the equal-cost Youden's-J
+operating point:
 
-* **Split / weighted conformal thresholds** -- a cut on a nonconformity score
-  with a finite-sample, distribution-free bound on the rate at which conforming
-  points are flagged. The weighted variant preserves that bound under covariate
-  shift using density-ratio weights (Tibshirani, Foygel Barber, Candès &
-  Ramdas, 2019), which is exactly the shift this pipeline already estimates.
+* Split / weighted conformal thresholds: a cut on a nonconformity score with a
+  finite-sample, distribution-free bound on the rate at which conforming points
+  are flagged. The weighted variant preserves that bound under covariate shift
+  using density-ratio weights (Tibshirani, Foygel Barber, Candès & Ramdas,
+  2019).
 
-* **Risk-coverage analysis** -- evaluate the *whole* confidence ordering as a
-  selective predictor (Geifman & El-Yaniv, 2017) via the risk-coverage curve
-  and AURC, instead of scoring a single threshold.
+* Risk-coverage analysis: evaluate the whole confidence ordering as a selective
+  predictor (Geifman & El-Yaniv, 2017) via the risk-coverage curve and AURC.
 
-* **Cost- and constraint-based operating points** -- pick a threshold by
-  minimising expected cost, or by maximising coverage subject to an FPR /
-  precision constraint (Neyman-Pearson). Youden's J is included as the
-  equal-cost, prevalence-independent special case, for comparison only.
+* Cost- and constraint-based operating points: minimise expected cost, or
+  maximise coverage subject to an FPR / precision constraint (Neyman-Pearson).
+  Youden's J is the equal-cost, prevalence-independent special case.
 
-* **Bootstrap CIs on a threshold** -- so the auto-QA layer can fire a
-  threshold adjustment only when the deployed cut is implausible under recent
-  data, rather than chasing sampling noise.
+* Bootstrap CIs on a threshold: let the auto-QA layer fire a threshold
+  adjustment only when the deployed cut is implausible under recent data.
 
 Conventions
 -----------
-* *Nonconformity / OOD scores*: higher = more anomalous (e.g. kNN OOD
-  distance). Conformal calibration is done on the population you want to
-  "cover" (typically in-distribution data).
-* *Confidence scores* (risk-coverage): higher = more confident, accepted first.
+* Nonconformity / OOD scores: higher = more anomalous (e.g. kNN OOD distance).
+  Conformal calibration runs on the population to cover (usually in-distribution).
+* Confidence scores (risk-coverage): higher = more confident, accepted first.
   Convert an OOD distance with ``confidence = -distance``.
-* *Binary detection* (operating points): the positive class is the thing the
-  threshold flags (reject / outlier / error); ``scores`` are higher for
-  positives, and a sample is flagged when ``score >= threshold``.
+* Binary detection (operating points): the positive class is what the threshold
+  flags (reject / outlier / error); ``scores`` are higher for positives, and a
+  sample is flagged when ``score >= threshold``.
 
 Pure NumPy; no model or framework dependency.
 """
@@ -43,25 +38,21 @@ from typing import Callable
 
 import numpy as np
 
-# --------------------------------------------------------------------------- #
-# Conformal thresholds                                                         #
-# --------------------------------------------------------------------------- #
+# Conformal thresholds
 
 
 def conformal_threshold(cal_scores: np.ndarray, alpha: float) -> float:
     r"""Split-conformal threshold on a nonconformity score.
 
-    Given calibration scores drawn from the population to be covered and a
-    target error rate ``alpha``, returns the ``ceil((n+1)(1-alpha))``-th
-    smallest score. For exchangeable data this guarantees
+    Given calibration scores from the population to be covered and a target
+    error rate ``alpha``, returns the ``ceil((n+1)(1-alpha))``-th smallest
+    score. For exchangeable data this guarantees
 
         P( s(X_new) <= threshold ) >= 1 - alpha,
 
-    i.e. a true conforming point is flagged (``s > threshold``) with
-    probability at most ``alpha`` -- a finite-sample, distribution-free
-    replacement for an eyeballed percentile such as p90. Returns ``+inf`` when
-    there are too few calibration points to support the guarantee at this
-    ``alpha`` (the only honest threshold is then "flag nothing").
+    i.e. a true conforming point is flagged (``s > threshold``) with probability
+    at most ``alpha``. Returns ``+inf`` when there are too few calibration points
+    to support the guarantee at this ``alpha`` (then flag nothing).
     """
     if not 0 < alpha < 1:
         raise ValueError("alpha must be in (0, 1)")
@@ -97,18 +88,15 @@ def weighted_conformal_threshold(
 ) -> float:
     r"""Weighted split-conformal threshold for covariate shift.
 
-    Under a shift where the test inputs follow ``P_test`` but calibration data
-    follow ``P_train``, standard conformal loses its coverage. Re-weighting each
-    calibration point by the density ratio ``w(x) = dP_test/dP_train`` restores
-    it (Tibshirani et al., 2019). Those weights are precisely what an OOD /
-    density model can estimate, so the same machinery that *detects* the shift
-    can *correct* the threshold for it.
+    When test inputs follow ``P_test`` but calibration data follow ``P_train``,
+    standard conformal loses coverage. Re-weighting each calibration point by the
+    density ratio ``w(x) = dP_test/dP_train`` restores it (Tibshirani et al.,
+    2019); those weights are what an OOD / density model can estimate.
 
-    With ``test_weight`` given, this uses the exact construction in which the
-    test point contributes an atom at ``+inf`` (the threshold is then the
-    weighted ``1-alpha`` quantile against the total normaliser). With
-    ``test_weight=None`` it returns the calibration-only weighted ``1-alpha``
-    quantile -- the standard instantiation when one shared threshold is applied
+    With ``test_weight`` given, the test point contributes an atom at ``+inf``
+    and the threshold is the weighted ``1-alpha`` quantile against the total
+    normaliser. With ``test_weight=None`` it returns the calibration-only
+    weighted ``1-alpha`` quantile, used when one shared threshold is applied
     across many test points. Returns ``+inf`` if the guarantee is unattainable.
     """
     if not 0 < alpha < 1:
@@ -135,9 +123,7 @@ def weighted_conformal_threshold(
     return float(v[min(idx, v.size - 1)])
 
 
-# --------------------------------------------------------------------------- #
-# Risk-coverage / selective prediction                                        #
-# --------------------------------------------------------------------------- #
+# Risk-coverage / selective prediction
 
 
 def risk_coverage_curve(
@@ -202,9 +188,7 @@ def coverage_at_risk(
     return float(cov[ok].max()) if ok.any() else 0.0
 
 
-# --------------------------------------------------------------------------- #
-# Operating-point selection on a binary detection score                       #
-# --------------------------------------------------------------------------- #
+# Operating-point selection on a binary detection score
 
 
 def _sweep(
@@ -288,9 +272,7 @@ def constraint_threshold(
     return float(thr[i]), {"tpr": float(tpr[i]), "fpr": float(fpr[i]), "precision": float(prec[i])}
 
 
-# --------------------------------------------------------------------------- #
-# Bootstrap confidence intervals on a threshold                               #
-# --------------------------------------------------------------------------- #
+# Bootstrap confidence intervals on a threshold
 
 
 def bootstrap_threshold_ci(
@@ -328,8 +310,8 @@ def conformal_threshold_ci(
     ci: float = 0.95,
     seed: int = 0,
 ) -> tuple[float, float, float]:
-    """Bootstrap CI for :func:`conformal_threshold` -- the sampling uncertainty
-    of the deployed cut, used by the auto-QA layer to gate threshold changes."""
+    """Bootstrap CI for :func:`conformal_threshold`: sampling uncertainty of the
+    deployed cut, used by the auto-QA layer to gate threshold changes."""
     return bootstrap_threshold_ci(
         lambda d: conformal_threshold(d, alpha), cal_scores, n_boot, ci, seed
     )

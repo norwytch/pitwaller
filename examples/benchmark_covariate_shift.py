@@ -1,17 +1,15 @@
-"""Covariate-shift text benchmark (the method's intended strength).
+"""Covariate-shift text benchmark.
 
-Trains a sentiment classifier on movie reviews (Rotten Tomatoes), then feeds it
-product reviews (Amazon) -- a shifted input domain with the *same* pos/neg labels.
-Under covariate shift max-softmax tends to stay overconfident while accuracy
-falls, which is exactly the failure an embedding-space OOD score should catch.
+Trains a sentiment classifier on movie reviews (Rotten Tomatoes), then scores
+product reviews (Amazon): a shifted domain with the same pos/neg labels.
 
     pip install -e '.[text]'
     python examples/benchmark_covariate_shift.py
 
-Reports, on a mixed in-domain + shifted batch:
-  1. AUROC for flagging the shifted domain -- kNN-distance vs max-softmax.
-  2. The accuracy drop under shift, and that softmax confidence stays high anyway.
-  3. Accuracy by confidence tier (labels valid in both domains, so it's real).
+On a mixed in-domain + shifted batch, reports:
+  1. AUROC for flagging the shifted domain: kNN-distance vs max-softmax.
+  2. The accuracy drop under shift while softmax confidence stays high.
+  3. Accuracy by confidence tier (labels valid in both domains).
 """
 
 from __future__ import annotations
@@ -19,8 +17,8 @@ from __future__ import annotations
 import itertools
 import os
 
-# Multiple OpenMP runtimes (torch + Anaconda-MKL numpy) clash and segfault under
-# multithreading on macOS; skip faiss and serialize OpenMP before importing them.
+# macOS: clashing OpenMP runtimes (torch + MKL numpy) segfault, so skip faiss and
+# serialize OpenMP before importing them.
 os.environ.setdefault("PITWALLER_NO_FAISS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")

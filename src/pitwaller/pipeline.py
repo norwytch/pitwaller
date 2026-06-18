@@ -4,10 +4,10 @@
 
     raw inputs --embedder--> features --OODModel--> OODResult --tiering--> Tier
 
-It fits the OOD reference model on the training set's embeddings and then scores
-production inputs into ``(OODResult, Tier)`` pairs, which feed straight into
-:mod:`pitwaller.monitoring`. The embedder is injected, so the same pipeline runs on
-mock features in a test and on real EfficientNet-B4 features in production.
+It fits the OOD reference on training embeddings, then scores production inputs
+into ``(OODResult, Tier)`` pairs for :mod:`pitwaller.monitoring`. The embedder is
+injected, so the same pipeline runs on mock features in tests and real features
+in production.
 """
 
 from __future__ import annotations
@@ -71,12 +71,10 @@ class ConfidencePipeline:
         """Switch from p50/p90 tiering to label-calibrated, risk-targeted tiers.
 
         ``cal_inputs`` is a labelled calibration set (raw inputs or pre-computed
-        features) and ``cal_correct`` the aligned per-sample correctness of the
-        downstream classifier. Fits a reliability map and places the HIGH/MED/LOW
-        cuts so HIGH keeps selective risk ``<= risk_high`` and MED ``<= risk_med``
-        (with a finite-sample guarantee when ``delta`` is set). Until this is
-        called, :meth:`score` uses the unsupervised p50/p90 tiering unchanged.
-        See :mod:`pitwaller.tier_calibration`.
+        features); ``cal_correct`` the aligned per-sample correctness of the
+        downstream classifier. Places HIGH/MED/LOW cuts so HIGH keeps selective
+        risk ``<= risk_high`` and MED ``<= risk_med`` (finite-sample guarantee
+        when ``delta`` is set). See :mod:`pitwaller.tier_calibration`.
         """
         if not self._fitted:
             raise RuntimeError("fit the OOD reference before calibrating tiers")
@@ -93,8 +91,8 @@ class ConfidencePipeline:
 
     @property
     def calibration(self):
-        """The fitted :class:`~pitwaller.tier_calibration.TierCalibration`
-        (reliability map + tier cuts), or ``None`` if still on p50/p90."""
+        """The fitted :class:`~pitwaller.tier_calibration.TierCalibration`, or
+        ``None`` if still on p50/p90."""
         return self._calibrator.calibration_ if self._calibrator else None
 
     def score(self, inputs) -> list[ScoredSample]:
@@ -110,10 +108,9 @@ class ConfidencePipeline:
     def neighbors(self, inputs, k: int = 5):
         """Nearest training examples to each input, as ``(distances, indices)``.
 
-        The same FAISS index that scores OOD-ness also retrieves: the indices
-        point into the fitted training set, so a LOW/OOD flag can be explained by
-        the training items the input is closest to. See :mod:`pitwaller.retrieval`
-        for full similarity search (dense / BM25 / hybrid) and retrieval metrics.
+        Indices point into the fitted training set, so a LOW/OOD flag can be
+        explained by the training items the input is closest to. See
+        :mod:`pitwaller.retrieval` for full similarity search and metrics.
         """
         if not self._fitted:
             raise RuntimeError("pipeline not fitted; call fit() first")

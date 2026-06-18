@@ -1,39 +1,18 @@
 """Label-calibrated confidence tiers.
 
-The default tiering (:mod:`pitwaller.confidence`) places HIGH/MED/LOW with the
-``p50``/``p90`` percentiles of the training kNN-distance distribution and an
-AND/OR table over the kNN band and the Isolation-Forest flag. That is *free*
-(no labels) but *arbitrary*: the cuts answer "how far is this relative to
-training data?" when a tier should answer "how much can I trust this?". The two
-questions only coincide to the extent distance predicts error.
+Given a labelled calibration set, defines HIGH/MED/LOW tiers by their selective
+risk rather than by training-distance percentiles. Two steps:
 
-Given a *labelled* calibration set this module defines tiers by what they
-actually promise, in two composed steps:
-
-1. **Fuse the signals into one calibrated reliability score.** A monotonic map
+1. Fuse the OOD signals into one reliability score: a monotonic map
    ``[kNN distance, IF score, ...] -> P(correct)`` (standardise + logistic
-   regression) replaces both the percentile cuts and the boolean table with a
-   single ordered, auditable score. Logistic regression is monotone in each
-   signal, its coefficients are inspectable, and the fit is checked with a
-   reliability diagram / ECE.
+   regression), audited with a reliability diagram / ECE.
+2. Place the tier cuts at risk targets on that score: HIGH keeps selective risk
+   (error rate among accepted samples) under ``risk_high`` (default 1%), MED
+   under ``risk_med`` (default 5%), everything else LOW. With ``delta`` set each
+   cut carries a finite-sample guarantee (see :func:`risk_targeted_threshold`).
 
-2. **Place the tier cuts at risk targets on that score.** HIGH is the most
-   confident band whose *selective risk* (error rate among accepted samples)
-   stays under ``risk_high`` (default 1%), MED under ``risk_med`` (default 5%),
-   everything else LOW. The reliability map is fit on one data split and the cuts
-   are certified on a *disjoint* one (sample-splitting), so the score is
-   independent of the data it is certified against. With ``delta`` set, each cut
-   then carries a finite-sample guarantee: a Hoeffding upper bound on the
-   held-out risk is tested down a nested sequence of thresholds (fixed-sequence /
-   Learn-then-Test), so "HIGH" really means "certified <= risk_high error
-   out-of-sample" rather than "happened to look good on the training fold".
-
-The honest cost: every option here needs labels, which is exactly why the
-percentile default exists. :class:`~pitwaller.pipeline.ConfidencePipeline` keeps
-the p50/p90 tiering until you call ``calibrate`` with a labelled set, so this is
-strictly opt-in.
-
-Pure NumPy + scikit-learn (already a core dependency); no torch.
+Opt-in: :class:`~pitwaller.pipeline.ConfidencePipeline` stays on p50/p90 tiering
+until ``calibrate`` is called. Pure NumPy + scikit-learn.
 """
 
 from __future__ import annotations
@@ -49,13 +28,11 @@ from .ood import OODResult
 
 
 def ood_features(results: list[OODResult]) -> np.ndarray:
-    """Default fusion features from a list of :class:`~pitwaller.ood.OODResult`.
+    """Default fusion features: ``(N, 2)`` array of ``[knn_distance, if_score]``.
 
-    Returns an ``(N, 2)`` array of ``[knn_distance, if_score]`` -- the two raw,
-    *continuous* OOD signals. Pass your own ``feature_fn`` to
-    :meth:`TierCalibrator.fit` (and the pipeline) to fold in extra per-sample
-    signals such as max-softmax, the logit margin, or ensemble disagreement (an
-    epistemic-uncertainty channel).
+    Pass your own ``feature_fn`` to :meth:`TierCalibrator.fit` (and the pipeline)
+    to add per-sample signals such as max-softmax, logit margin, or ensemble
+    disagreement.
     """
     return np.array([[r.knn_distance, r.if_score] for r in results], dtype=float)
 
@@ -70,11 +47,8 @@ class ReliabilityModel:
 
     Standardises the features and fits a logistic regression; the predicted
     probability of correctness is the reliability score the tiers are cut on.
-    Logistic regression is monotone in each signal and its (standardised)
-    coefficients are directly inspectable, so the fused score stays auditable.
-
-    Degenerate calibration sets (a single observed outcome) collapse to the
-    constant base rate rather than failing.
+    A calibration set with a single observed outcome collapses to the constant
+    base rate rather than failing.
     """
 
     def __init__(self):
@@ -112,15 +86,14 @@ class ReliabilityModel:
     @property
     def coefficients(self) -> np.ndarray | None:
         """Standardised logistic coefficients, one per feature (``None`` if the
-        model degenerated to a constant). Sign and magnitude show how each signal
-        moves predicted reliability."""
+        model degenerated to a constant)."""
         return None if self.clf_ is None else self.clf_.coef_.ravel()
 
     def reliability_diagram(
         self, X: np.ndarray, correct: np.ndarray, n_bins: int = 10
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Binned ``(mean_confidence, empirical_accuracy, count)`` for auditing
-        calibration. A well-calibrated map sits on the diagonal."""
+        """Binned ``(mean_confidence, empirical_accuracy, count)``. A
+        well-calibrated map sits on the diagonal."""
         p = self.predict(X)
         y = np.asarray(correct, dtype=float)
         edges = np.linspace(0.0, 1.0, n_bins + 1)
@@ -138,7 +111,7 @@ class ReliabilityModel:
 
     def ece(self, X: np.ndarray, correct: np.ndarray, n_bins: int = 10) -> float:
         """Expected Calibration Error: support-weighted mean gap between binned
-        confidence and accuracy. Lower is better; 0 is perfect calibration."""
+        confidence and accuracy. Lower is better."""
         conf, acc, count = self.reliability_diagram(X, correct, n_bins)
         m = count > 0
         if not m.any():
@@ -159,34 +132,24 @@ def risk_targeted_threshold(
 ) -> float:
     """Lowest confidence cut whose accepted set keeps selective risk at target.
 
-    Samples are accepted most-confident-first. Returns the confidence threshold
-    ``tau`` such that accepting ``confidence >= tau`` holds the selective risk
-    (error rate among accepted) at or below ``target_risk``; accept as many as
-    possible subject to that.
-
-    With ``delta=None`` the *empirical* selective risk is used and the cut is the
-    one giving the **largest** accepted set whose selective risk is at or below
-    target -- the maximum-coverage operating point (cf.
-    :func:`pitwaller.experimental.calibration.coverage_at_risk`). Empirical selective risk is
-    noisy at low coverage, so "largest set under target" is used rather than
-    "first prefix to break target", which a single early error would truncate.
+    Samples are accepted most-confident-first. Returns ``tau`` such that
+    accepting ``confidence >= tau`` holds the selective risk (error rate among
+    accepted) at or below ``target_risk``, over the largest such accepted set
+    (maximum-coverage operating point). Largest-set rather than first-prefix:
+    empirical risk is noisy at low coverage, where a single early error would
+    truncate the tier.
 
     With ``delta`` set, the empirical risk is replaced by a Hoeffding upper
-    confidence bound at level ``delta`` and the same largest-set rule is applied
-    (RCPS-style). The bound is wide for a tiny accept set and tightens as the set
-    grows, so the certified set sits in the middle of the ordering, not at the
-    single most-confident point. For the bound to transfer out-of-sample the
-    ``confidence`` must come from a scorer fit on data *independent* of
-    ``correct`` -- :class:`TierCalibrator` arranges that by sample-splitting.
-    Controlling the true risk needs enough calibration points; too few and the
-    cut degenerates to ``+inf``.
+    confidence bound at level ``delta`` (RCPS-style). For the bound to transfer
+    out-of-sample, ``confidence`` must come from a scorer fit on data independent
+    of ``correct``; :class:`TierCalibrator` arranges this by sample-splitting.
+    Too few calibration points and the cut degenerates to ``+inf``.
 
-    Caveat: the bound is pointwise. The threshold is *selected* over the nested
+    Caveat: the bound is pointwise. The threshold is selected over the nested
     family by this same bound and is not Bonferroni/union-corrected for that
-    selection -- the standard RCPS-pointwise operating point, valid in practice
-    under the monotone risk structure, but treat ``delta`` as a per-cut level
-    rather than a hard simultaneous one. A union bound (``ln(n/delta)``) would be
-    fully rigorous at the cost of much more conservative cuts.
+    selection, so treat ``delta`` as a per-cut level, not a simultaneous one. A
+    union bound (``ln(n/delta)``) would be fully rigorous but much more
+    conservative.
 
     ``+inf`` is returned when no accepted set meets the target (empty tier).
     """
@@ -209,10 +172,8 @@ def risk_targeted_threshold(
         if not 0 < delta < 1:
             raise ValueError("delta must be in (0, 1)")
         # RCPS-style: certify the risk with a Hoeffding upper confidence bound.
-        # The sqrt term is large for a tiny accept set and shrinks as the set
-        # grows, so the certified region sits in the middle -- not at the single
-        # most-confident point. Take the *largest* accept set whose bound holds
-        # (max coverage), which is the RCPS operating point, not "stop at m=1".
+        # The sqrt term is large for a tiny accept set and shrinks as it grows,
+        # so the largest accept set whose bound holds is the max-coverage cut.
         risk = emp_risk + np.sqrt(np.log(1.0 / delta) / (2.0 * k))
 
     ok = risk <= target_risk
@@ -229,7 +190,7 @@ def risk_targeted_threshold(
 
 @dataclass
 class TierCalibration:
-    """The fitted artefacts: the reliability map and the two tier cuts."""
+    """Fitted artefacts: the reliability map and the two tier cuts."""
 
     reliability: ReliabilityModel
     tau_high: float
@@ -244,9 +205,8 @@ class TierCalibrator:
     """Fit calibrated HIGH/MED/LOW cuts from a labelled calibration set.
 
     ``fit`` takes a feature matrix (or, via :meth:`fit_results`, a list of
-    :class:`~pitwaller.ood.OODResult`) plus per-sample correctness, learns the
-    reliability map, and places the two cuts at ``risk_high`` / ``risk_med``.
-    ``tier`` / ``tier_results`` then assign tiers to new samples.
+    :class:`~pitwaller.ood.OODResult`) plus per-sample correctness. ``tier`` /
+    ``tier_results`` then assign tiers to new samples.
     """
 
     def __init__(
@@ -273,14 +233,13 @@ class TierCalibrator:
     ) -> "TierCalibrator":
         """Fit the reliability map and place the tier cuts.
 
-        The map is fit on one split and the cuts are certified on a *disjoint*
-        one. Reusing the same data for both optimistically biases the risk
-        estimate -- the score is trained to make confident points correct on the
-        exact set the bound is then computed over -- which voids the ``delta``
-        guarantee out-of-sample. Sample-splitting keeps the score independent of
-        the certification data, as RCPS / Learn-then-Test require. (A K-fold
-        cross-fit would use the data more efficiently; this is the simple,
-        unimpeachable version.)
+        The map is fit on one split and the cuts certified on a disjoint one.
+        Reusing the same data for both biases the risk estimate optimistically
+        (the score is trained to make confident points correct on the exact set
+        the bound is computed over), voiding the ``delta`` guarantee
+        out-of-sample. Sample-splitting keeps the score independent of the
+        certification data, as RCPS / Learn-then-Test require. (A K-fold cross-fit
+        would use the data more efficiently.)
         """
         features = np.asarray(features, dtype=float)
         correct = np.asarray(correct, dtype=bool)
@@ -292,12 +251,12 @@ class TierCalibrator:
         cal_idx, fit_idx = perm[:n_cal], perm[n_cal:]
 
         rel = ReliabilityModel().fit(features[fit_idx], correct[fit_idx])
-        cal_score = rel.predict(features[cal_idx])  # score is independent of this fold
+        cal_score = rel.predict(features[cal_idx])  # independent of the fit fold
         cal_correct = correct[cal_idx]
         tau_high = risk_targeted_threshold(cal_score, cal_correct, self.risk_high, self.delta)
         tau_med = risk_targeted_threshold(cal_score, cal_correct, self.risk_med, self.delta)
-        # A looser risk budget can never demand a *higher* cut than a tighter one;
-        # enforce the nesting so HIGH ⊆ MED even through finite-sample noise.
+        # Enforce HIGH ⊆ MED nesting through finite-sample noise: a looser risk
+        # budget can never demand a higher cut than a tighter one.
         tau_med = min(tau_med, tau_high)
         self.calibration_ = TierCalibration(
             reliability=rel,

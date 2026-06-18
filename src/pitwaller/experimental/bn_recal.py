@@ -1,30 +1,24 @@
-"""BatchNorm recalibration -- justify it, do it, prove it worked.
+"""BatchNorm recalibration: justify, recalibrate, validate.
 
-The ``BN_RECALIBRATION`` action exists in the policy, but firing it blindly is a
-mistake: recalibrating BatchNorm running statistics helps under *covariate
-shift* and can quietly hurt otherwise. This module wraps the action in the rigor
-it deserves:
+Recalibrating BatchNorm running statistics helps under covariate shift and can
+hurt otherwise, so the ``BN_RECALIBRATION`` action is gated by three steps:
 
-1. **Justify** -- measure how far the input statistics have actually moved. For
-   each BatchNorm layer we compare the stored running ``(mean, var)`` against the
-   statistics of a fresh batch using the closed-form 2-Wasserstein distance
-   between the per-channel Gaussians (and symmetric KL as a cross-check).
-   Recalibrate only when the shift is real and large.
+1. Justify: for each BatchNorm layer, compare the stored running ``(mean, var)``
+   against a fresh batch via the closed-form 2-Wasserstein distance between the
+   per-channel Gaussians (with symmetric KL as a cross-check). Recalibrate only
+   on a real, large shift.
 
-2. **Recalibrate** -- re-estimate running statistics by forward-passing fresh,
-   *unlabelled* inputs with BN in cumulative-moving-average mode (AdaBN; Li et
+2. Recalibrate: re-estimate running statistics by forward-passing fresh,
+   unlabelled inputs with BN in cumulative-moving-average mode (AdaBN; Li et
    al., 2017). No gradients, no labels.
 
-3. **Validate** -- confirm the change is a real improvement, not noise, with
-   McNemar's paired test on before/after correctness over a labelled validation
-   set.
+3. Validate: McNemar's paired test on before/after correctness over a labelled
+   validation set.
 
-The statistics (steps 1 and 3) are pure NumPy / stdlib and fully tested. The two
-functions that actually touch a network -- :func:`collect_bn_stats` and
-:func:`recalibrate_bn` -- are the integration points; they lazily import
-``torch`` so the rest of the module works without it. They are real, working
-implementations, not mocks: drop in your model and a fresh-input iterable and
-they run. They are marked WIRE-IN below.
+Steps 1 and 3 are pure NumPy/stdlib and tested. The two functions that touch a
+network, :func:`collect_bn_stats` and :func:`recalibrate_bn`, are the
+integration points; they lazily import ``torch`` so the rest works without it.
+They are marked WIRE-IN below.
 """
 
 from __future__ import annotations
@@ -34,9 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# --------------------------------------------------------------------------- #
-# 1. Justify: distance between stored and fresh BN statistics                  #
-# --------------------------------------------------------------------------- #
+# 1. Justify: distance between stored and fresh BN statistics
 
 
 def gaussian_2wasserstein(
@@ -44,8 +36,8 @@ def gaussian_2wasserstein(
 ) -> float:
     r"""Closed-form squared 2-Wasserstein between two diagonal Gaussians.
 
-    BatchNorm tracks per-channel mean and variance, i.e. a diagonal covariance,
-    for which the Bures term collapses and
+    For diagonal covariance (BatchNorm's per-channel mean/var) the Bures term
+    collapses to
 
         W2^2 = ||mu1 - mu2||^2 + ||sqrt(var1) - sqrt(var2)||^2.
 
@@ -62,9 +54,8 @@ def symmetric_kl_gaussian(
 ) -> float:
     """Symmetric KL between two diagonal Gaussians, summed over channels.
 
-    A scale-sensitive cross-check on the 2-Wasserstein distance; unlike W2 it
-    blows up when a channel's variance collapses, which is often exactly the
-    pathology you want flagged.
+    Scale-sensitive cross-check on W2: it blows up when a channel's variance
+    collapses, a pathology worth flagging.
     """
     mu1, var1, mu2, var2 = (np.asarray(a, dtype=float) for a in (mu1, var1, mu2, var2))
     v1 = np.maximum(var1, eps)
@@ -141,23 +132,21 @@ def bn_shift_report(
 def should_recalibrate(report: BNShiftReport, w2_threshold: float) -> bool:
     """Recommend recalibration when any layer's shift exceeds ``w2_threshold``.
 
-    Threshold is data-dependent; calibrate it from the layer-wise W2 you observe
-    across known-stable validation windows (e.g. its 99th percentile) so this
-    fires on genuine shift, not normal batch-to-batch wobble.
+    ``w2_threshold`` is data-dependent: calibrate it from the layer-wise W2 over
+    known-stable validation windows (e.g. its 99th percentile) so this fires on
+    genuine shift, not batch-to-batch wobble.
     """
     return report.max_w2 > w2_threshold
 
 
-# --------------------------------------------------------------------------- #
-# 2. Recalibrate: AdaBN over fresh unlabelled inputs   [WIRE-IN: needs torch]  #
-# --------------------------------------------------------------------------- #
+# 2. Recalibrate: AdaBN over fresh unlabelled inputs   [WIRE-IN: needs torch]
 
 
 def collect_bn_stats(model) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """WIRE-IN. Pull stored running ``(mean, var)`` from every BatchNorm layer.
 
-    Pair with :func:`feature_stats` on a fresh batch to build the two arguments
-    to :func:`bn_shift_report`.
+    Pair with :func:`feature_stats` on a fresh batch to build the arguments to
+    :func:`bn_shift_report`. Lazily imports torch.
     """
     try:
         from torch.nn.modules.batchnorm import _BatchNorm
@@ -177,15 +166,14 @@ def collect_bn_stats(model) -> dict[str, tuple[np.ndarray, np.ndarray]]:
 def recalibrate_bn(model, fresh_batches, reset: bool = True):
     """WIRE-IN. Re-estimate BatchNorm running statistics on fresh inputs (AdaBN).
 
-    ``fresh_batches`` is any iterable of model-ready input tensors drawn from the
-    *current* production distribution -- no labels required. With ``reset=True``
-    the running statistics are rebuilt from scratch using a cumulative moving
-    average over the stream (BN ``momentum=None``); set ``reset=False`` to nudge
-    the existing stats instead. Affine weights and all other parameters are
-    untouched. Returns the (in-place modified) model.
+    Lazily imports torch. ``fresh_batches`` is any iterable of model-ready input
+    tensors from the current production distribution; no labels required. With
+    ``reset=True`` the running statistics are rebuilt from scratch using a
+    cumulative moving average over the stream (BN ``momentum=None``);
+    ``reset=False`` nudges the existing stats instead. Affine weights and other
+    parameters are untouched. Returns the in-place modified model.
 
-    This is the action behind ``Action.BN_RECALIBRATION``. Validate the result
-    with :func:`validate_recalibration` before promoting it to production.
+    Validate the result with :func:`validate_recalibration` before promoting it.
     """
     try:
         import torch
@@ -217,9 +205,7 @@ def recalibrate_bn(model, fresh_batches, reset: bool = True):
     return model
 
 
-# --------------------------------------------------------------------------- #
-# 3. Validate: McNemar's paired test on before/after correctness               #
-# --------------------------------------------------------------------------- #
+# 3. Validate: McNemar's paired test on before/after correctness
 
 
 @dataclass
@@ -239,8 +225,7 @@ class BNRecalOutcome:
         return self.acc_after - self.acc_before
 
     def significant_improvement(self, alpha: float = 0.05) -> bool:
-        """Net positive *and* statistically significant. A bare accuracy bump
-        that doesn't clear the test is treated as noise -- don't promote it."""
+        """True when net positive and McNemar-significant at ``alpha``."""
         return self.fixed > self.broken and self.p_value < alpha
 
 

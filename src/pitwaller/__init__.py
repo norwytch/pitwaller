@@ -1,14 +1,9 @@
-"""pitwaller -- embedding-space OOD detection and confidence tiering.
+"""pitwaller: embedding-space OOD detection and confidence tiering.
 
-The validated core lives here at the top level:
-
-    from pitwaller import ConfidencePipeline, MockEmbedder
-    from pitwaller import OODModel, Tier, tier_for
-    from pitwaller import TierCalibrator, aggregate
-
-The illustrative / standalone half (the heuristic remediation policy, BatchNorm
-recalibration, and the single-threshold statistics toolkit) lives under
-``pitwaller.experimental`` -- e.g. ``from pitwaller.experimental import recommend``.
+Top-level exports cover the core: the pipeline, OOD model, tiers, tier
+calibration, retrieval, and monitoring. The heuristic remediation policy,
+BatchNorm recalibration, and single-threshold statistics toolkit live under
+``pitwaller.experimental`` (e.g. ``from pitwaller.experimental import recommend``).
 """
 
 from .confidence import Tier, tier_all, tier_for

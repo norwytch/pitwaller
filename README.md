@@ -74,9 +74,9 @@ Points past the 90th percentile default to LOW (`strict_outlier=True`); set it `
 
 This tiering needs no labels but is arbitrary: the cuts track the distance distribution, not the error rate you care about. With a labelled calibration set, [`tier_calibration.py`](#optional-label-calibrated-tiers-tier_calibrationpy) sets the tiers by error rate instead. It's opt-in via `pipeline.calibrate(...)`; p50/p90 stays the default until you call it.
 
-### 3. From tiering to automated QA
+### 3. Automated QA (experimental)
 
-Monitoring aggregates predictions into diagnostics (OOD rate, tier drift, accuracy overall and per-tier, per-class recall). A policy engine maps those onto a remediation ladder, cheapest fix first:
+Monitoring aggregates predictions into diagnostics (OOD rate, tier drift, accuracy overall and per-tier, per-class recall). A heuristic policy engine maps those onto a remediation ladder, cheapest fix first:
 
 | Action | Triggered by |
 |--------|--------------|
@@ -88,33 +88,7 @@ Monitoring aggregates predictions into diagnostics (OOD rate, tier drift, accura
 | `PRUNING` | latency/size pressure while accuracy is healthy |
 | `ARCHITECTURE_REBUILD` | OOD rate stays high after retraining (the capacity ceiling) |
 
-The engine diagnoses the kind and size of failure, and escalates when a cheap fix has been tried repeatedly without resolving it. The action set reflects a deep-network deployment (BatchNorm recal, backbone retrain), so this half is CNN-oriented; the OOD detection and tiering above are classifier-agnostic.
-
-### 4. Pit stop vs. engine rebuild
-
-Each action carries an effort tier: how time-, labor-, and compute-intensive the fix is, and whether the model stays live during it.
-
-| Effort tier | Actions | What it costs | Model live? |
-|-------------|---------|---------------|-------------|
-| **PIT_STOP** | threshold adjust, BN recalibration | config/stats only, no training, seconds–minutes | ✅ stays live |
-| **GARAGE** | pruning, partial retrain, ADASYN rebalance | bounded retrain on labelled data, hours | ⛔ redeploy |
-| **ENGINE_REBUILD** | full backbone retrain | retrain the whole backbone, days, heavy GPU | ⛔ redeploy |
-| **NEW_BUILD** | architecture rebuild | clean-sheet redesign, weeks, research effort | ⛔ redeploy |
-
-(`GREEN_FLAG` is the fifth, no-action tier: everything within tolerance.)
-
-`recommend()` returns actions cheapest-first; `group_by_effort()` buckets them by tier, and `heaviest_tier()` reports the biggest job this round requires:
-
-```python
-from pitwaller.experimental import recommend, group_by_effort, heaviest_tier
-
-recs = recommend(diag)
-print("biggest job:", heaviest_tier(recs).value)        # e.g. ENGINE_REBUILD
-for tier, group in group_by_effort(recs).items():
-    print(tier.value, [r.action.value for r in group])
-```
-
-The bucketing never contradicts the cost ladder (there's a test for that): a heavier tier always implies a strictly costlier action.
+`recommend(diag)` returns these cheapest-first, escalating when a cheap fix keeps failing. Each action also carries an effort tier (`PIT_STOP` → `GARAGE` → `ENGINE_REBUILD` → `NEW_BUILD`) recording whether the model can keep serving during the fix. The action set is CNN-specific and the policy is heuristic with no outcome feedback, so it lives in [`experimental/`](src/pitwaller/experimental/); the OOD detection and tiering above are the validated core.
 
 ### Optional: label-calibrated tiers (`tier_calibration.py`)
 

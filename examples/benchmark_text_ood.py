@@ -1,28 +1,22 @@
-"""Text near-OOD benchmark (no images): does the embedding-space OOD score flag
-documents from unseen categories better than a max-softmax baseline?
+"""Text near-OOD benchmark. Flags documents from unseen categories.
 
     pip install -e '.[text]'
     python examples/benchmark_text_ood.py
 
-Trains a classifier on five 20-Newsgroups categories, embeds every document with
-a sentence-transformer (the substrate the OOD stack scores in), then on a test
-batch of in-category + *unseen-category* documents measures:
+Trains a classifier on five 20-Newsgroups categories, embeds each document with a
+sentence-transformer, then on a test batch of in-category + unseen-category
+documents measures:
 
-  1. OOD AUROC -- does the kNN-distance OOD score separate unseen-category docs
-     from in-category ones, vs a max-softmax baseline?
+  1. OOD AUROC: kNN-distance vs a max-softmax baseline.
   2. Accuracy by confidence tier on the in-category split (labels valid there).
-
-Raw text can't be scored directly, so the Embedder is load-bearing here -- unlike
-a tabular setup where the features already are the input.
 """
 
 from __future__ import annotations
 
 import os
 
-# On macOS, multiple OpenMP runtimes in one process (faiss-cpu, torch, and an
-# Anaconda-MKL numpy) clash and segfault under multithreading. Skip faiss (brute
-# kNN is used here) and serialize OpenMP. Must be set before importing numpy/torch.
+# macOS: clashing OpenMP runtimes (faiss-cpu, torch, MKL numpy) segfault, so skip
+# faiss and serialize OpenMP. Must be set before importing numpy/torch.
 os.environ.setdefault("PITWALLER_NO_FAISS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -64,7 +58,6 @@ def main() -> None:
     ood_docs, _ = _load("test", OOD_CATEGORIES)
 
     # Embed once; the classifier and the OOD model share this embedding space.
-    # (pipe.score(raw_docs) would embed internally -- we reuse the vectors here.)
     print(f"Embedding {len(train_docs)}+{len(in_docs)}+{len(ood_docs)} docs on CPU "
           "(one-time)...", flush=True)
     E_tr = emb.embed(train_docs)
@@ -72,8 +65,8 @@ def main() -> None:
     E_ood = emb.embed(ood_docs)
 
     clf = LogisticRegression(max_iter=1000).fit(E_tr, train_y)
-    # brute-force kNN (exact, instant at this scale) avoids loading faiss's OpenMP
-    # alongside torch; "auto" (FAISS) is the production default for large indexes.
+    # brute-force kNN avoids loading faiss's OpenMP alongside torch; "auto" (FAISS)
+    # is the production default for large indexes.
     pipe = ConfidencePipeline(emb, k=10, contamination=0.05, index_backend="brute").fit(E_tr)
 
     scored_in = pipe.score(E_in)

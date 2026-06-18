@@ -1,33 +1,27 @@
-"""Remediation policy -- the "auto-QA" decision engine.
+"""Heuristic remediation policy mapping diagnostics to corrective actions.
 
-Monitoring says *what is wrong*; this module decides *what to do about it*. It
-maps :class:`~pitwaller.monitoring.Diagnostics` onto an ordered ladder of corrective
+Maps :class:`~pitwaller.monitoring.Diagnostics` onto an ordered ladder of
 actions, cheapest and least destructive first:
 
-    THRESHOLD_ADJUSTMENT   recalibrate tier cut-points; no weights touched
-    BN_RECALIBRATION       refresh BatchNorm running stats on fresh inputs
+    THRESHOLD_ADJUSTMENT      recalibrate tier cut-points; no weights touched
+    BN_RECALIBRATION          refresh BatchNorm running stats on fresh inputs
     PARTIAL_BACKBONE_RETRAIN  fine-tune later layers / affected classes
-    ADASYN_REBALANCE       synthesise minority-class samples, then retrain
-    FULL_BACKBONE_RETRAIN  retrain the whole backbone
-    PRUNING                shrink the model (efficiency, accuracy intact)
-    ARCHITECTURE_REBUILD   capacity/ceiling problem; redesign the network
+    ADASYN_REBALANCE          synthesise minority-class samples, then retrain
+    FULL_BACKBONE_RETRAIN     retrain the whole backbone
+    PRUNING                   shrink the model (accuracy intact)
+    ARCHITECTURE_REBUILD      capacity ceiling; redesign the network
 
-The engine is a transparent, priority-ordered rule set. Each rule inspects the
-diagnostics, and if it fires it emits a :class:`Recommendation` carrying the
-action, a severity, a human-readable rationale, and the signals that triggered
-it. Rules are evaluated cheapest-first; ``recommend`` returns the ranked list so
-an operator (or an orchestrator) sees the full picture, not just the top action.
+Each rule inspects the diagnostics and, if it fires, emits a
+:class:`Recommendation` with the action, severity, rationale, and triggering
+signals. ``recommend`` returns the full ranked list, not just the top action.
 
-Two ideas keep this from being a pile of ``if`` statements:
+The policy diagnoses the kind of failure, not just its size: covariate shift
+(inputs drift, OOD climbs, accuracy holds) wants BN recalibration, a broad
+accuracy drop wants retraining, a single collapsing class wants ADASYN. It also
+escalates: ``recent_attempts`` promotes a repeatedly-applied cheap fix up the
+ladder so it doesn't loop forever on a problem that needs a retrain.
 
-* **Diagnose the *kind* of failure, not just its size.** A covariate shift
-  (inputs drift, OOD rate climbs, accuracy holds) wants BN recalibration; a
-  semantic drop (accuracy falls across classes) wants retraining; a single
-  collapsing class wants ADASYN. Different signatures, different fixes.
-* **Escalate when cheap fixes have already failed.** ``recent_attempts`` lets a
-  repeated cheap intervention promote the recommendation up the ladder, so the
-  system doesn't loop forever recalibrating thresholds against a problem that
-  needs a retrain.
+This is a heuristic policy with no outcome feedback loop.
 """
 
 from __future__ import annotations
@@ -63,17 +57,14 @@ _COST = {
 
 
 class EffortTier(str, Enum):
-    """How time-/tech-intensive a remediation is, in pit-lane terms.
+    """How intensive a remediation is: wall-clock, labels, GPU, and whether the
+    model can keep serving while you do it.
 
-    A coarse bucketing of the cost ladder by *what the fix actually demands* --
-    wall-clock, whether you need labels, GPU intensity, and crucially whether
-    the model can keep serving while you do it.
-
-        GREEN_FLAG     nothing wrong; stay out on track
-        PIT_STOP       splash & go -- config only, no training, model stays live
-        GARAGE         between-session service -- bounded retrain, redeploy
-        ENGINE_REBUILD full powertrain teardown -- retrain the whole backbone
-        NEW_BUILD      clean-sheet car -- redesign the architecture itself
+        GREEN_FLAG     nothing wrong
+        PIT_STOP       config only, no training, model stays live
+        GARAGE         bounded retrain, redeploy
+        ENGINE_REBUILD retrain the whole backbone
+        NEW_BUILD      redesign the architecture
     """
 
     GREEN_FLAG = "GREEN_FLAG"
@@ -103,7 +94,7 @@ EFFORT: dict["Action", EffortProfile] = {
         gpu_intensity="none", stays_live=True,
         typical_duration="n/a", reversible=True,
     ),
-    # --- PIT STOP: config / stats only, no training, model never leaves track -
+    # PIT STOP: config / stats only, no training, model stays live
     Action.THRESHOLD_ADJUSTMENT: EffortProfile(
         EffortTier.PIT_STOP, touches_weights=False, needs_labels=False,
         gpu_intensity="none", stays_live=True,
@@ -114,7 +105,7 @@ EFFORT: dict["Action", EffortProfile] = {
         gpu_intensity="light", stays_live=True,   # forward passes only; hot-swap
         typical_duration="minutes", reversible=True,
     ),
-    # --- GARAGE: bounded weight surgery + fine-tune, redeploy ------------------
+    # GARAGE: bounded weight surgery + fine-tune, redeploy
     Action.PRUNING: EffortProfile(
         EffortTier.GARAGE, touches_weights=True, needs_labels=True,
         gpu_intensity="light", stays_live=False,
@@ -130,13 +121,13 @@ EFFORT: dict["Action", EffortProfile] = {
         gpu_intensity="moderate", stays_live=False,
         typical_duration="hours-1 day", reversible=False,
     ),
-    # --- ENGINE REBUILD: retrain the whole backbone ---------------------------
+    # ENGINE REBUILD: retrain the whole backbone
     Action.FULL_BACKBONE_RETRAIN: EffortProfile(
         EffortTier.ENGINE_REBUILD, touches_weights=True, needs_labels=True,
         gpu_intensity="heavy", stays_live=False,
         typical_duration="days", reversible=False,
     ),
-    # --- NEW BUILD: redesign the network --------------------------------------
+    # NEW BUILD: redesign the network
     Action.ARCHITECTURE_REBUILD: EffortProfile(
         EffortTier.NEW_BUILD, touches_weights=True, needs_labels=True,
         gpu_intensity="heavy", stays_live=False,
@@ -168,7 +159,7 @@ class Recommendation:
 
     @property
     def effort(self) -> EffortProfile:
-        """Time-/tech-intensity profile of this action (pit stop ... new build)."""
+        """Effort profile of this action."""
         return EFFORT[self.action]
 
     @property
@@ -178,7 +169,7 @@ class Recommendation:
 
 @dataclass
 class PolicyThresholds:
-    """All tunables in one place so the policy is configurable, not magic."""
+    """Policy tunables."""
 
     ood_rate_warn: float = 0.10          # outlier-band fraction worth noticing
     ood_rate_critical: float = 0.30      # persistent heavy OOD -> capacity issue
@@ -195,14 +186,13 @@ class PolicyThresholds:
 
 @dataclass
 class ThresholdDriftSignal:
-    """Statistical evidence about whether the deployed threshold is stale.
+    """Evidence about whether the deployed threshold is stale.
 
-    Built from :mod:`pitwaller.experimental.calibration`: re-estimate the optimal cut on recent
-    data (``new_threshold``) with a bootstrap CI (``ci_low``/``ci_high``), then
-    ask whether the ``current_threshold`` still being served is a plausible
-    value under that CI. If it falls outside, the cut has drifted beyond
-    sampling noise and is worth adjusting; if inside, an apparent drift is noise
-    and the policy should *not* act on it.
+    Built from :mod:`pitwaller.experimental.calibration`: re-estimate the optimal
+    cut on recent data (``new_threshold``) with a bootstrap CI
+    (``ci_low``/``ci_high``). The threshold is significant (worth adjusting) when
+    ``current_threshold`` falls outside that CI; inside the CI, an apparent drift
+    is sampling noise.
     """
 
     current_threshold: float
@@ -224,15 +214,12 @@ def recommend(
     """Return remediation recommendations, cheapest-first.
 
     ``recent_attempts`` maps an :class:`Action` value to how many times it has
-    already been applied in the recent past without resolving the issue; it
-    drives escalation up the ladder.
+    already been applied without resolving the issue; this drives escalation.
 
     ``threshold_drift``, when supplied, replaces the heuristic threshold rule
-    with a statistically gated one: a threshold adjustment is recommended only
-    when the deployed cut is implausible under a bootstrap CI of the freshly
-    re-estimated optimum (see :class:`ThresholdDriftSignal`). When the signal is
-    present but *not* significant, no threshold change is recommended even if the
-    HIGH-confidence share moved -- the move is within noise.
+    with a gated one: a threshold adjustment fires only when the signal is
+    significant (see :class:`ThresholdDriftSignal`), regardless of how much the
+    HIGH-confidence share moved.
     """
     t = thresholds or PolicyThresholds()
     attempts = recent_attempts or {}
@@ -242,9 +229,7 @@ def recommend(
     high_drop = diag.high_rate_drop
     accuracy_stable = drop is None or drop < t.accuracy_drop_warn
 
-    # --- Rule 1: tier thresholds have gone stale (accuracy still intact) -------
-    # The tiers no longer mean what they used to, yet the model is still right
-    # within each tier -> recalibrate the cut-points. Cheapest fix.
+    # Rule 1: tier thresholds stale, accuracy intact -> recalibrate cut-points.
     if threshold_drift is not None:
         # Statistically gated: act only on a significant, real drift.
         if threshold_drift.significant and accuracy_stable:
@@ -279,10 +264,8 @@ def recommend(
             )
         )
 
-    # --- Rule 2: covariate shift -- inputs drift, accuracy holds (for now) ----
-    # Rising OOD/IF rate with stable accuracy is classic covariate shift.
-    # Refreshing BatchNorm statistics on fresh unlabelled data is the cheap,
-    # label-free correction before anything heavier.
+    # Rule 2: covariate shift (OOD/IF rate up, accuracy stable) -> BN recal,
+    # the cheap label-free correction before anything heavier.
     if (
         diag.ood_rate >= t.ood_rate_warn
         and (drop is None or drop < t.accuracy_drop_warn)
@@ -293,17 +276,16 @@ def recommend(
                 Action.BN_RECALIBRATION,
                 Severity.WARN,
                 f"Input distribution shifted (OOD {diag.ood_rate:.0%}, "
-                f"IF {diag.if_outlier_rate:.0%}) with accuracy stable -- "
+                f"IF {diag.if_outlier_rate:.0%}) with accuracy stable; "
                 "covariate shift; recalibrate BatchNorm on recent inputs.",
                 {"ood_rate": diag.ood_rate, "if_outlier_rate": diag.if_outlier_rate},
             )
         )
 
-    # --- Rule 3: one or more classes collapsing -> targeted rebalance ---------
-    # Only trust a low recall once the class has enough labelled support, so a
-    # single mislabelled sample of a rare class can't fire a retrain. When no
-    # support count is recorded (caller built Diagnostics by hand), don't
-    # second-guess it.
+    # Rule 3: classes collapsing -> targeted rebalance.
+    # Only trust low recall once the class has enough labelled support, so one
+    # mislabelled rare-class sample can't fire a retrain. No support count
+    # recorded (caller built Diagnostics by hand) means don't second-guess it.
     collapsing = [
         c
         for c, r in diag.per_class_recall.items()
@@ -322,7 +304,7 @@ def recommend(
             )
         )
 
-    # --- Rule 4: moderate, broad accuracy drop -> partial retrain -------------
+    # Rule 4: moderate, broad accuracy drop -> partial retrain.
     if drop is not None and t.accuracy_drop_warn <= drop < t.accuracy_drop_critical:
         recs.append(
             Recommendation(
@@ -334,7 +316,7 @@ def recommend(
             )
         )
 
-    # --- Rule 5: severe accuracy drop -> full retrain -------------------------
+    # Rule 5: severe accuracy drop -> full retrain.
     if drop is not None and drop >= t.accuracy_drop_critical:
         recs.append(
             Recommendation(
@@ -346,7 +328,7 @@ def recommend(
             )
         )
 
-    # --- Rule 6: efficiency pressure with healthy accuracy -> prune -----------
+    # Rule 6: efficiency pressure with healthy accuracy -> prune.
     if t.size_pressure and (drop is None or drop < t.accuracy_drop_warn):
         recs.append(
             Recommendation(
@@ -358,10 +340,8 @@ def recommend(
             )
         )
 
-    # --- Rule 7: persistent heavy OOD -> the architecture is the ceiling ------
-    # When the input space has moved so far that a large fraction is OOD and
-    # retraining has already been tried, the network's inductive biases no
-    # longer fit the problem -- redesign.
+    # Rule 7: persistent heavy OOD after retraining -> architecture is the
+    # ceiling; the network's inductive biases no longer fit the problem.
     retrain_tries = attempts.get(Action.FULL_BACKBONE_RETRAIN.value, 0)
     if diag.ood_rate >= t.ood_rate_critical and retrain_tries >= t.escalate_after_attempts:
         recs.append(
@@ -369,13 +349,12 @@ def recommend(
                 Action.ARCHITECTURE_REBUILD,
                 Severity.CRITICAL,
                 f"OOD rate {diag.ood_rate:.0%} persists after {retrain_tries} "
-                "full retrains; the architecture has hit its ceiling -- rebuild.",
+                "full retrains; the architecture has hit its ceiling; rebuild.",
                 {"ood_rate": diag.ood_rate, "full_retrain_attempts": retrain_tries},
             )
         )
 
-    # --- Escalation: a cheap fix applied repeatedly without resolution --------
-    # Promote the cheapest recommendation one rung up the ladder.
+    # Escalation: promote a repeatedly-applied cheap fix one rung up the ladder.
     if recs:
         cheapest = min(recs, key=lambda r: r.cost)
         tries = attempts.get(cheapest.action.value, 0)
@@ -425,7 +404,7 @@ def _escalate(action: Action) -> Action:
     return action
 
 
-# Pit-lane severity, lightest -> heaviest. Useful for sorting/reporting.
+# Effort tiers, lightest -> heaviest, for sorting/reporting.
 EFFORT_ORDER = [
     EffortTier.GREEN_FLAG,
     EffortTier.PIT_STOP,
@@ -436,10 +415,9 @@ EFFORT_ORDER = [
 
 
 def group_by_effort(recs: list[Recommendation]) -> dict[EffortTier, list[Recommendation]]:
-    """Bucket recommendations by pit-lane effort tier, lightest tier first.
+    """Bucket recommendations by effort tier, lightest first.
 
-    Empty tiers are omitted. Within a tier, recommendations keep the
-    cheapest-first order :func:`recommend` produced.
+    Empty tiers are omitted. Within a tier, order follows :func:`recommend`.
     """
     buckets: dict[EffortTier, list[Recommendation]] = {}
     for tier in EFFORT_ORDER:
@@ -450,8 +428,7 @@ def group_by_effort(recs: list[Recommendation]) -> dict[EffortTier, list[Recomme
 
 
 def heaviest_tier(recs: list[Recommendation]) -> EffortTier:
-    """The most intensive tier any recommendation calls for -- i.e. how big a
-    job this round of QA actually is, from a green flag to a new build."""
+    """The most intensive tier any recommendation calls for."""
     return max(
         (r.effort_tier for r in recs),
         key=EFFORT_ORDER.index,

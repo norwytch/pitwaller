@@ -1,24 +1,18 @@
 """Feature extraction.
 
-The OOD machinery is agnostic to where features come from: it operates on
-whatever embedding you feed it. By default that's a model's own penultimate
-features, but for detecting genuinely novel *content* a broad foundation
-embedding is usually a better substrate (see "Choosing the embedding" in the
-README). Either way, we hide the feature extractor behind a small ``Embedder``
-protocol. The pipeline, the index, the OOD model and the tiering logic all
-depend only on that protocol -- never on PyTorch directly. That keeps the core
-importable and testable without heavyweight ML dependencies, and lets you swap
-in any feature extractor you like.
+Feature extractors sit behind the ``Embedder`` protocol, so the index, OOD
+model and tiering depend only on that protocol and never import torch directly.
+A model's own penultimate features work, but a broad foundation embedding is
+usually a better substrate for novel content (see "Choosing the embedding" in
+the README).
 
-Three concrete embedders are provided:
+Embedders provided:
 
-* ``MockEmbedder``  -- deterministic synthetic features, used by the demo and
-  the test suite so the whole pipeline runs with zero external weights/data.
-* ``EffNetB4Embedder`` -- 1792-dim features from the global-pooled penultimate
-  layer of an EfficientNet-B4 (the model's *own* feature space). Lazily imports
-  ``torch``/``timm``.
-* ``CLIPEmbedder`` -- CLIP vision-encoder features (broad semantic
-  representation, stronger for novel-content detection). Lazily imports
+* ``MockEmbedder``: deterministic synthetic features for the demo and tests, so
+  the pipeline runs with no external weights/data.
+* ``EffNetB4Embedder``: 1792-dim global-pooled penultimate features from an
+  EfficientNet-B4. Lazily imports ``torch``/``timm``.
+* ``CLIPEmbedder``: CLIP vision-encoder features. Lazily imports
   ``open_clip``/``torch``.
 """
 
@@ -45,8 +39,8 @@ class Embedder(Protocol):
 
 def l2_normalize(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """Row-wise L2 normalisation. OOD distances are computed on the unit sphere
-    so that cosine geometry (which is what EffNet features behave well under)
-    maps cleanly onto the L2 metric FAISS indexes use."""
+    so that cosine geometry (which EffNet features behave well under) maps
+    cleanly onto the L2 metric FAISS indexes use."""
     x = np.asarray(x, dtype=np.float32)
     norms = np.linalg.norm(x, axis=1, keepdims=True)
     return x / np.maximum(norms, eps)
@@ -55,9 +49,9 @@ def l2_normalize(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 class MockEmbedder:
     """Deterministic synthetic embedder for demos and tests.
 
-    Produces clustered Gaussian features so that "in-distribution" and
-    "out-of-distribution" inputs are actually separable -- enough to exercise
-    every branch of the OOD + tiering logic without a trained network.
+    Produces clustered Gaussian features so in- and out-of-distribution inputs
+    are separable, enough to exercise the OOD and tiering logic without a
+    trained network.
     """
 
     def __init__(self, dim: int = 64, n_clusters: int = 8, seed: int = 0):
@@ -91,10 +85,10 @@ class MockEmbedder:
 
 
 class EffNetB4Embedder:
-    """Real penultimate-layer features from EfficientNet-B4 (1792-dim).
+    """Penultimate-layer features from EfficientNet-B4 (1792-dim).
 
-    Requires ``torch`` and ``timm`` (``pip install 'pitwaller[torch]'``). Kept out
-    of the import path of everything else so the core stays dependency-light.
+    Requires ``torch`` and ``timm`` (``pip install 'pitwaller[torch]'``),
+    imported lazily so the core stays dependency-light.
     """
 
     def __init__(self, device: str = "cpu", pretrained: bool = True):
@@ -110,7 +104,7 @@ class EffNetB4Embedder:
         self._torch = torch
         self.device = device
         # num_classes=0 + global_pool='avg' => model returns the 1792-d
-        # global-pooled feature vector, which is exactly the OOD feature space.
+        # global-pooled feature vector.
         self.model = timm.create_model(
             "efficientnet_b4", pretrained=pretrained, num_classes=0, global_pool="avg"
         ).eval().to(device)
@@ -132,19 +126,16 @@ class EffNetB4Embedder:
 class CLIPEmbedder:
     """Image features from a CLIP vision encoder (via ``open_clip``).
 
-    Unlike :class:`EffNetB4Embedder`, whose features are tuned to one model's
-    training labels and collapse whatever was irrelevant to that task, CLIP's
-    encoder is trained on broad image-text data and preserves wide *semantic*
-    content. That makes it a far stronger substrate for detecting genuinely
-    novel content (near-OOD / open-set), which is what the OOD stack keys on.
-    See "Choosing the embedding" in the README for the tradeoff.
+    Trained on broad image-text data, so it preserves wide semantic content and
+    is a stronger substrate for novel-content detection (near-OOD / open-set)
+    than one model's task features. See "Choosing the embedding" in the README.
 
-    Requires ``open_clip`` and ``torch`` (``pip install 'pitwaller[clip]'``).
-    Imported lazily so the core stays dependency-light.
+    Requires ``open_clip`` and ``torch`` (``pip install 'pitwaller[clip]'``),
+    imported lazily so the core stays dependency-light.
 
     ``embed`` takes already-preprocessed tensors of shape ``(N, 3, H, W)``. CLIP
-    is sensitive to its specific preprocessing, so the canonical transform is
-    exposed as ``self.preprocess`` -- build a batch with, e.g.::
+    is sensitive to its preprocessing, so the canonical transform is exposed as
+    ``self.preprocess``; build a batch with, e.g.::
 
         import torch
         batch = torch.stack([emb.preprocess(img) for img in pil_images])
@@ -198,13 +189,11 @@ class CLIPEmbedder:
 class SentenceTransformerEmbedder:
     """Text features from a Sentence-Transformers model (e.g. ``all-MiniLM-L6-v2``).
 
-    Turns raw strings into dense semantic vectors -- the substrate the OOD stack
-    scores novelty in for text. Like :class:`CLIPEmbedder` this is a broad
-    foundation embedding (strong for detecting novel *content*), not one model's
-    task features; see "Choosing the embedding" in the README.
+    A broad foundation embedding for text (strong for novel-content detection),
+    like :class:`CLIPEmbedder`; see "Choosing the embedding" in the README.
 
     Requires ``sentence-transformers`` (``pip install 'pitwaller[text]'``), which
-    pulls in torch. Imported lazily so the core stays dependency-light.
+    pulls in torch, imported lazily so the core stays dependency-light.
     """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2", device: str = "cpu"):

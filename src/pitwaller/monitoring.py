@@ -1,13 +1,9 @@
 """Production monitoring.
 
-Turns a stream of per-prediction records into the aggregate **diagnostics**
-that the remediation policy consumes. This is the layer that watches the model
-in production and decides *what is wrong*, separately from *what to do about it*
-(that's :mod:`pitwaller.experimental.decisions`).
-
-A ``PredictionRecord`` is what you log per inference. Ground truth is optional
-because most of it arrives late (or never); the diagnostics degrade gracefully
-when labels are sparse, falling back on the unsupervised OOD signals.
+Aggregates a stream of per-inference ``PredictionRecord``s into the
+:class:`Diagnostics` the remediation policy
+(:mod:`pitwaller.experimental.decisions`) consumes. Ground truth is optional:
+when labels are sparse the diagnostics fall back on the unsupervised OOD signals.
 """
 
 from __future__ import annotations
@@ -35,8 +31,8 @@ class PredictionRecord:
 class Diagnostics:
     """Aggregate health signals over a monitoring window.
 
-    All rates are in ``[0, 1]``. ``*_baseline`` fields, when set, let the policy
-    reason about *drift* rather than absolute level.
+    All rates are in ``[0, 1]``. The ``baseline_*`` fields, when set, let the
+    policy reason about drift rather than absolute level.
     """
 
     n: int

@@ -1,27 +1,18 @@
 """Out-of-distribution scoring in the model's own feature space.
 
-Two *independent* detectors are fit on the training embeddings:
+Two independent detectors are fit on the training embeddings:
 
-1. **kNN distance.** For a query we take the mean (squared-L2) distance to its
-   ``k`` nearest training neighbours -- a non-parametric local-density estimate.
-   Calibrating this against the *training set's own* kNN-distance distribution
-   gives two thresholds:
+1. kNN distance: mean squared-L2 distance to a query's ``k`` nearest training
+   neighbours. Calibrated against the training set's own kNN-distance
+   distribution to give two thresholds: ``p50`` (median, the dense "core") and
+   ``p90`` (beyond it the point is sparser than 90% of training data, a
+   distance outlier).
+2. Isolation Forest: a global anomaly detector fit on the same embeddings,
+   catching off-manifold points kNN distance can miss (e.g. a point wedged
+   between clusters).
 
-   * ``p50`` -- median training density. Inside it is the dense "core".
-   * ``p90`` -- the 90th percentile. Beyond it the point is sparser than 90 %
-     of training data and is treated as a distance outlier.
-
-2. **Isolation Forest.** A global structural anomaly detector fit on the same
-   embeddings. It captures off-manifold points that kNN distance can miss
-   (e.g. a point wedged between clusters).
-
-Keeping them independent is deliberate: they fail in different ways, and the
-confidence tiering downstream combines their *agreement* into HIGH/MED/LOW.
-
-The design rests on an empirical property: OOD distance and model accuracy tend
-to be monotonically related -- nearer the core, more accurate. That monotonicity
-is what licenses using distance bands as a confidence proxy in the first place;
-``OODModel`` is the component that measures it.
+The two are kept independent so the downstream tiering can combine their
+agreement into HIGH/MED/LOW.
 """
 
 from __future__ import annotations
@@ -35,15 +26,14 @@ from .index import HNSWConfig, VectorIndex
 
 
 def _knn_excluding_self(dist: np.ndarray, idx: np.ndarray, k: int) -> np.ndarray:
-    """Mean distance to each row's ``k`` nearest *non-self* neighbours.
+    """Mean distance to each row's ``k`` nearest non-self neighbours.
 
     ``dist`` / ``idx`` are an ``(n, >=k+1)`` self-query result. The self point is
-    excluded by *id* (row position), not by column 0: an approximate index (FAISS
+    excluded by id (row position), not by column 0: an approximate index (FAISS
     HNSW) does not guarantee the self point is the column-0 hit, so a blind
     column drop would discard a genuine neighbour on a recall miss. Masking the
     self id to ``+inf`` and re-sorting takes the ``k`` nearest non-self neighbours
-    whether or not self was retrieved, while keeping a true duplicate at
-    distance 0.
+    whether or not self was retrieved, while keeping a true duplicate at distance 0.
     """
     n = dist.shape[0]
     masked = np.where(idx == np.arange(n)[:, None], np.inf, np.asarray(dist, dtype=float))
@@ -56,11 +46,10 @@ class OODResult:
     """Per-sample OOD readout.
 
     ``band`` is one of ``"core"`` (<= p50), ``"margin"`` (p50-p90),
-    ``"outlier"`` (> p90). ``if_score`` is the Isolation Forest's *continuous*
-    anomaly score (``decision_function``: higher = more in-distribution),
-    retained alongside the ``if_outlier`` boolean so a calibrated tiering layer
-    can fuse the raw signal rather than a thresholded flag (see
-    :mod:`pitwaller.tier_calibration`).
+    ``"outlier"`` (> p90). ``if_score`` is the Isolation Forest's continuous
+    anomaly score (``decision_function``: higher = more in-distribution), kept
+    alongside ``if_outlier`` so a calibrated tiering layer can fuse the raw
+    signal rather than a thresholded flag (see :mod:`pitwaller.tier_calibration`).
     """
 
     knn_distance: float

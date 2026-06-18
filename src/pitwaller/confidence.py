@@ -1,29 +1,21 @@
 """Confidence tiering.
 
-Two independent OOD signals are folded into a single operational tier:
+Folds two independent OOD signals into a single tier:
 
-* ``dist_concern`` -- the kNN distance left the dense core (band != "core").
-* ``if_outlier``   -- the Isolation Forest flagged the sample.
+* ``dist_concern``: the kNN distance left the dense core (band != "core").
+* ``if_outlier``: the Isolation Forest flagged the sample.
 
-The tiering rule:
+The rule:
 
-* **HIGH** -- in the centre 50th percentile **and** not an IF outlier.
-  (both detectors agree the sample is in-distribution)
-* **MED**  -- an IF outlier **or** in the 50-90 band, but not both.
-  (exactly one detector is concerned)
-* **LOW**  -- an IF outlier **and** outside the core.
-  (both detectors are concerned)
+* HIGH: in the core and not an IF outlier (both detectors agree in-distribution).
+* MED: an IF outlier or in the 50-90 band, but not both (one detector concerned).
+* LOW: an IF outlier and outside the core (both concerned).
 
-One honest gap in the literal rule: it never says what happens to points
-beyond the 90th percentile when the Isolation Forest *doesn't* fire. Taken
-literally those land in MED, which feels too generous for the sparsest region
-of feature space. ``strict_outlier=True`` (the recommended default) treats the
-``"outlier"`` band as automatically LOW. Set it False to reproduce the literal
-rule exactly.
+The literal rule leaves points beyond p90 without an IF flag in MED, which is
+too generous for the sparsest region. ``strict_outlier=True`` (the default)
+maps the ``"outlier"`` band to LOW; set it False for the literal rule.
 
-The mapping is pure and table-driven so it is trivially unit-testable and the
-policy is auditable -- no hidden thresholds live here, they live in
-:class:`~pitwaller.ood.OODModel`.
+Thresholds live in :class:`~pitwaller.ood.OODModel`, not here.
 """
 
 from __future__ import annotations
